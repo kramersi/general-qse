@@ -384,9 +384,10 @@ class GeneralQSE(object):
         deltas = np.nanmax(b, axis=0) * self.delta
 
         # Convert regression coefficients to probabilities for qualitative state
-        prob_p = norm_cdf(b - deltas)
-        prob_n = norm_cdf(-b - deltas)
-        prob_0 = 1 - prob_p - prob_n
+        eps = 0.001  # introduce eps to prevent numerical problems if probabilites are close to zero
+        prob_p = norm_cdf(b - deltas) + eps
+        prob_n = norm_cdf(-b - deltas) + eps
+        prob_0 = 1 - prob_p - prob_n + eps
 
         params = {'pos': prob_p, 'neg': prob_n, 'zero': prob_0, 'ignore': np.ones(b.shape)}
 
@@ -632,17 +633,17 @@ class GeneralQSE(object):
 if __name__ == '__main__':
 
     # Part I. load data from csv
-    df = pd.read_csv('Data/cam1_intra_0_5_10__ly4ftr16__cam1_0_5_10.csv', sep=',', dtype={'sensor_value': np.float64})
+    df = pd.read_csv('data/cam1_intra_0_5_10__ly4ftr16__cam1_0_5_10.csv', sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
     time1 = df['nr']
-    y = df['flood_index'].values
-    # y = df['sensor_value'].values
+    #y = df['flood_index'].values
+    y = df['sensor_value'].values
 
     # Part II. Algorithm setup and run
     # A. Setup and Initialization with tunning parameters
-    lan = 1
-    trans = [['Q0', 'L+', 0.5*lan], ['L+', 'U+', 0.1*lan], ['U+', 'L+', 1*lan], ['U+', 'Q0', 0.01*lan], ['Q0', 'Q0', 0.5*lan],
-             ['L+', 'L+', 1*lan], ['U+', 'U+', 1*lan]]
+    lan = 0.9
+    trans = [['Q0', 'L+', 0.5*lan], ['Q0', 'Q0', 0.5*lan], ['Q0', 'Q+', 0.0], ['L+', 'U+', 0.1*lan], ['U+', 'L+', 1.0*lan], ['U+', 'Q0', 0.01*lan],
+             ['L+', 'L+', 1.0*lan], ['U+', 'U+', 1.0*lan], ['Q+', 'Q+', 0.5*lan], ['L+', 'Q+', 0.5*lan]]
 
     qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans, bw_estimation=False, n_support=200)
 
