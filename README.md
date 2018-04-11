@@ -2,6 +2,8 @@
 
 Generalized Qualitative State Estimation (QSE)
 
+It's still under development.
+
 This Script is based on the QSE algorithme, which Kris Villez implemented in Matlab. It produces a qualitative probabilistic estimation of a singal, which tells with which probabilty it follows a certain shape (e.g. goes down, up, stay constant, etc).  This method, based on the earlier developed Qualtiative Path estimation is further generalized by allowing all 39 different combinations of signs between
 signal, first and second derivative and implements the possibility to choose from different kernels. Furthermore it is capable of handling different polynom order bigger than 1. This version is three times faster than the matlab version, because it's not using a loop over each moving window, but applying matrix calculations of all moving windows at same time. A estimation of the best bandwidth is uncluded by using generalized cross validation.
 
