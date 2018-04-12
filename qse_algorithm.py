@@ -287,6 +287,7 @@ class GeneralQSE(object):
         """
         # uncertainty:
         sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
+        print('cov_mat', sigma_b)
         stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
         stdev_b = stdev_b[0:self.coeff_nr]
 
@@ -303,8 +304,10 @@ class GeneralQSE(object):
             an initial bandwidth
 
         """
-        # stdev_data = np.std(signal)
-        # init_bw = 1.06 * stedev_data * len(signal) ** (- 1. / (4 + self.order))
+        stdev_data = np.std(signal)
+        mean_data = np.mean(signal)
+        init_bw = 1.06 * stdev_data/mean_data * len(signal) ** (- 1. / (4 + self.order))
+        print('ini_bw', init_bw)
         min_bw = 20
         init_bw = max(len(signal) * 0.05, min_bw)
         print('initialized', init_bw)
@@ -384,7 +387,7 @@ class GeneralQSE(object):
         deltas = np.nanmax(b, axis=0) * self.delta
 
         # Convert regression coefficients to probabilities for qualitative state
-        eps = 0.001  # introduce eps to prevent numerical problems if probabilites are close to zero
+        eps = 0.0001  # introduce eps to prevent numerical problems if probabilites are close to zero
         prob_p = norm_cdf(b - deltas) + eps
         prob_n = norm_cdf(-b - deltas) + eps
         prob_0 = 1 - prob_p - prob_n + eps
@@ -452,9 +455,10 @@ class GeneralQSE(object):
 
         # make signals to equal length and shift it to calculate residuals
         #raw = np.delete(signal, np.arange(self.n_support - 1))
-        #signal = pd.Series(signal)
+        signal = pd.Series(signal)
         filtered = pd.Series(all_features[:, 0])
         residuals = signal - filtered  # .shift(-int(self.delay))
+        cov_mat = np.cov((signal.values, filtered.values), rowvar=0)
         print('resSumBef', np.nansum(residuals))
         # plt.figure(4)
         # plt.subplot(2, 1, 1)
@@ -474,9 +478,21 @@ class GeneralQSE(object):
         #trace = self.order
         neg_inf = np.eye(n) - influence_matrix
         n_inv = 1/n
+
+        # gccv score with genarela correlated cross validation
+        gccv = np.full(n, np.nan)
+        for i in range(self.n_support):
+            s = influence_matrix
+            y = np.dot(influence_matrix, y_stacks.T)[:,i]
+            x = y_stacks.T[:, i]
+            c = np.cov((x, y), rowvar=0)
+            gccv[i] = 1/n * np.nansum((x-y)**2) / (1 - sum(np.diag(2*s.dot(c) - np.dot(s.dot(c),s.T)))/n)**2
+        print('gccv_mean', gccv)
+
         gcv_sc = (n_inv*sum(np.dot(neg_inf, y_stacks.T)))**2/(n_inv * sum(np.diag(neg_inf)))**2
         res = y_stacks.T - np.dot(influence_matrix, y_stacks.T)
         print('sumRes', np.nansum(res))
+        # gcv score with overall smooth matrix
         # smooth_matrix = np.full((n, n), 0)
         # for i in range(n-self.n_support):
         #     smooth_matrix[i, i:self.n_support+i] = proj_matrix[0, :]
@@ -486,9 +502,9 @@ class GeneralQSE(object):
         gcv_score = (1/n) * np.nansum((residuals.values/(1 - trace/n))**2)
         print('score: ', gcv_score, gcv_sc)
 
-        return np.mean(gcv_sc)
+        return np.mean(gccv)  # np.mean(gcv_sc)
 
-    def sigma_eps_estimation(self, raw, filtered, show_results=True):
+    def sigma_eps_estimation(self, raw, filtered, show_results=False):
         """ Extract the variance of the residuals
 
         Attributes:
@@ -504,7 +520,7 @@ class GeneralQSE(object):
         raw = pd.Series(raw)
         filtered = pd.Series(filtered)
         residuals = raw - filtered  # .shift(-int(self.delay))
-
+        # print(np.cov((raw.values, filtered.values), rowvar=0))
         if show_results is True:
             plt.figure(3)
             plt.subplot(3, 1, 1)
@@ -636,8 +652,8 @@ if __name__ == '__main__':
     df = pd.read_csv('data/cam1_intra_0_5_10__ly4ftr16__cam1_0_5_10.csv', sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
     time1 = df['nr']
-    #y = df['flood_index'].values
-    y = df['sensor_value'].values
+    y = df['flood_index'].values
+    # y = df['sensor_value'].values
 
     # Part II. Algorithm setup and run
     # A. Setup and Initialization with tunning parameters
@@ -645,7 +661,7 @@ if __name__ == '__main__':
     trans = [['Q0', 'L+', 0.5*lan], ['Q0', 'Q0', 0.5*lan], ['Q0', 'Q+', 0.0], ['L+', 'U+', 0.1*lan], ['U+', 'L+', 1.0*lan], ['U+', 'Q0', 0.01*lan],
              ['L+', 'L+', 1.0*lan], ['U+', 'U+', 1.0*lan], ['Q+', 'Q+', 0.5*lan], ['L+', 'Q+', 0.5*lan]]
 
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans, bw_estimation=False, n_support=200)
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans, bw_estimation=True, n_support=100)
 
     # B. Run algorithms
     t = time.process_time()
