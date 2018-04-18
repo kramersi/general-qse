@@ -287,7 +287,6 @@ class GeneralQSE(object):
         """
         # uncertainty:
         sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
-        print('cov_mat', sigma_b)
         stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
         stdev_b = stdev_b[0:self.coeff_nr]
 
@@ -387,7 +386,7 @@ class GeneralQSE(object):
         deltas = np.nanmax(b, axis=0) * self.delta
 
         # Convert regression coefficients to probabilities for qualitative state
-        eps = 0.0001  # introduce eps to prevent numerical problems if probabilites are close to zero
+        eps = 0.000001  # introduce eps to prevent numerical problems if probabilites are close to zero
         prob_p = norm_cdf(b - deltas) + eps
         prob_n = norm_cdf(-b - deltas) + eps
         prob_0 = 1 - prob_p - prob_n + eps
@@ -714,8 +713,8 @@ if __name__ == '__main__':
     df = pd.read_csv('data/cam1_intra_0_5_10__ly4ftr16__cam1_0_5_10.csv', sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
     time1 = df['nr']
-    y = df['flood_index'].values
-    #y = df['sensor_value'].values
+    #y = df['flood_index'].values
+    y = df['sensor_value'].values
 
     # Part II. Algorithm setup and run
     # A. Setup and Initialization with tunning parameters
@@ -725,7 +724,7 @@ if __name__ == '__main__':
               ['U+', 'Q0', 0.25*lan], ['U+', 'L+', 0.25*lan], ['U+', 'U+', 0.25*lan], ['U+', 'F+', 0.25*lan],
               ['F+', 'Q0', 0.00*lan], ['F+', 'L+', 0.33*lan], ['F+', 'U+', 0.33*lan], ['F+', 'F+', 0.33*lan]]
 
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.09, transitions=trans1, bw_estimation=True, n_support=None)
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.09, transitions=trans1, bw_estimation=False, n_support=85)
 
     # B. Run algorithms
     t = time.process_time()
