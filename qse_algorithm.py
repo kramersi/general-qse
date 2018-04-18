@@ -34,6 +34,7 @@ If not, see <http://www.gnu.org/licenses/>.
 import numpy as np
 import pandas as pd
 from scipy.special import erf
+from scipy.stats import norm
 from scipy.optimize import minimize
 import matplotlib.pylab as plt
 import time
@@ -376,22 +377,17 @@ class GeneralQSE(object):
             stdev (ndarray): standard deviation of the polynom coefficients
 
         """
-        # because norm.cdf from scipy.stats is so slow the relationship between cdf and erf is used to calculate it
-        def norm_cdf(x):
-            return (1.0 + erf(x / np.sqrt(2.0))) / 2.0
-
         b = features / stdev  # normalise features by their standard deviation, necessary to use norm.cdf
 
         # get the max of each feature over time and take a procentage of it
         deltas = np.nanmax(b, axis=0) * self.delta
 
         # Convert regression coefficients to probabilities for qualitative state
-        eps = 0.000001  # introduce eps to prevent numerical problems if probabilites are close to zero
-        prob_p = norm_cdf(b - deltas) + eps
-        prob_n = norm_cdf(-b - deltas) + eps
-        prob_0 = 1 - prob_p - prob_n + eps
+        prob_p = norm.logcdf(b - deltas)
+        prob_n = norm.logcdf(-b - deltas)
+        prob_0 = norm.logcdf(1 - np.exp(prob_p) - np.exp(prob_n))
 
-        params = {'pos': prob_p, 'neg': prob_n, 'zero': prob_0, 'ignore': np.ones(b.shape)}
+        params = {'pos': prob_p, 'neg': prob_n, 'zero': prob_0, 'ignore': np.zeros(b.shape)}
 
         py = np.zeros((b.shape[0], self.prim_nr))
 
@@ -399,9 +395,9 @@ class GeneralQSE(object):
         for i, prim in enumerate(self.primitives):  # iterate over primitives
             # iterate over signal, 1st and 2nd derivatives, this is equal to iterate over params of polynom.
             prob = [params[sign][:, j] for j, sign in enumerate(self.all_primitives[prim]) if j < self.coeff_nr]
-            py[:, i] = np.prod(prob, axis=0)
+            py[:, i] = np.sum(prob, axis=0)
 
-        return py
+        return np.exp(py)
 
     def estimate_states(self, primitive_prob, states):
         """
@@ -724,7 +720,7 @@ if __name__ == '__main__':
               ['U+', 'Q0', 0.25*lan], ['U+', 'L+', 0.25*lan], ['U+', 'U+', 0.25*lan], ['U+', 'F+', 0.25*lan],
               ['F+', 'Q0', 0.00*lan], ['F+', 'L+', 0.33*lan], ['F+', 'U+', 0.33*lan], ['F+', 'F+', 0.33*lan]]
 
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.09, transitions=trans1, bw_estimation=False, n_support=85)
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.09, transitions=trans1, bw_estimation=False, n_support=200)
 
     # B. Run algorithms
     t = time.process_time()
