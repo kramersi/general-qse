@@ -306,11 +306,11 @@ class GeneralQSE(object):
         """
         stdev_data = np.std(signal)
         mean_data = np.mean(signal)
-        init_bw = 1.06 * stdev_data/mean_data * len(signal) ** (- 1. / (4 + self.order))
-        print('ini_bw', init_bw)
+        # init_bw = 1.06 * stdev_data/mean_data * len(signal) ** (- 1. / (4 + self.order)) * len(signal)
+        # print('ini_bw', init_bw)
         min_bw = 20
-        init_bw = max(len(signal) * 0.05, min_bw)
-        print('initialized', init_bw)
+        init_bw = max(len(signal) * 0.05, min_bw) * stdev_data/mean_data
+        print('bw initialized', init_bw)
         self.delay = (init_bw - 1)/2
         self.n_support = int(init_bw)
 
@@ -427,7 +427,7 @@ class GeneralQSE(object):
         """
         calculating the predicted regression error if leaving one out cross validation is done. But instead of
         iterating n times over the signal length by leaving one away, the error is estimated whith the generalised
-        cross validation approximation. Therefore just one iteration is needed per bandwith estimation.
+        cross validation approximation. Therefore just one iteration is needed per bandwidth estimation.
 
         Args:
             y: signal which should be smoothed
@@ -453,13 +453,23 @@ class GeneralQSE(object):
         # make kernel regression by applying moving window of signal to projection matrix
         all_features, y_stacks = self.predict_features(signal, proj_matrix)
 
+        # # extend signal
+        # first = np.repeat(signal[0], self.delay)
+        # if self.n_support % 2 == 1:
+        #     last = np.repeat(signal[-1], self.delay)
+        # else:
+        #     last = np.repeat(signal[-1], self.delay + 1)
+        #
+        # ext_signal = np.concatenate((first, signal, last))
+
+
         # make signals to equal length and shift it to calculate residuals
-        #raw = np.delete(signal, np.arange(self.n_support - 1))
-        signal = pd.Series(signal)
-        filtered = pd.Series(all_features[:, 0])
-        residuals = signal - filtered  # .shift(-int(self.delay))
-        cov_mat = np.cov((signal.values, filtered.values), rowvar=0)
-        print('resSumBef', np.nansum(residuals))
+        # raw = np.delete(signal, np.arange(self.n_support - 1))
+        # signal = pd.Series(signal)
+        # filtered = all_features[:, 0]
+        # residuals = signal - filtered  # .shift(-int(self.delay))
+        # #cov_mat = np.cov((signal, filtered), rowvar=0)
+        # print('resSumBef', np.nansum(residuals))
         # plt.figure(4)
         # plt.subplot(2, 1, 1)
         # pd.Series(signal).plot()
@@ -469,40 +479,81 @@ class GeneralQSE(object):
         # plt.show()
 
         # calculating influence matrix, which is needed for calculating gcv afterwards
-        basis = self.regr_basis
-        w = self.w
-        # ToDo: Simplify because in linear projection trace of infl matrix is always degegree of freedom (order)
-        influence_matrix = (basis.dot(proj_matrix))
-        trace = sum(np.diag(influence_matrix))
-        n = self.n_support
+        # basis = self.regr_basis
+        # w = self.w
+        # # ToDo: Simplify because in linear projection trace of infl matrix is always degegree of freedom (order)
+        # influence_matrix = (basis.dot(proj_matrix))
+        # trace = sum(np.diag(influence_matrix))
+        # sig_n = len(signal)
+        # n = self.n_support
         #trace = self.order
-        neg_inf = np.eye(n) - influence_matrix
-        n_inv = 1/n
+        #neg_inf = np.eye(n) - influence_matrix
+        #n_inv = 1/n
 
-        # gccv score with genarela correlated cross validation
-        gccv = np.full(n, np.nan)
-        for i in range(self.n_support):
-            s = influence_matrix
-            y = np.dot(influence_matrix, y_stacks.T)[:,i]
-            x = y_stacks.T[:, i]
-            c = np.cov((x, y), rowvar=0)
-            gccv[i] = 1/n * np.nansum((x-y)**2) / (1 - sum(np.diag(2*s.dot(c) - np.dot(s.dot(c),s.T)))/n)**2
-        print('gccv_mean', gccv)
+        # # gcv score with general cross validation
+        # n = signal.size
+        # gccv = np.full(n, np.nan)
+        # influence_matrix = (self.regr_basis.dot(proj_matrix))
+        # for i in range(self.n_support):
+        #     s = influence_matrix
+        #     y = np.dot(influence_matrix, y_stacks.T)[:,i]
+        #     x = y_stacks.T[:, i]
+        #     sig = np.std(x-y)
+        #     c = np.cov((x, y), rowvar=0)/sig
+        #     gccv[i] = 1/n * np.nansum((x-y)**2) / (1 - sum(np.diag(2*s.dot(c) - np.dot(s.dot(c),s.T)))/n)**2
+        # print('gccv', gccv)
 
-        gcv_sc = (n_inv*sum(np.dot(neg_inf, y_stacks.T)))**2/(n_inv * sum(np.diag(neg_inf)))**2
-        res = y_stacks.T - np.dot(influence_matrix, y_stacks.T)
-        print('sumRes', np.nansum(res))
-        # gcv score with overall smooth matrix
-        # smooth_matrix = np.full((n, n), 0)
-        # for i in range(n-self.n_support):
-        #     smooth_matrix[i, i:self.n_support+i] = proj_matrix[0, :]
-        # print(smooth_matrix)
+        # gcv without cross correlation
+        sig_n = signal.size
+        n = self.n_support
+        gcv = np.full(sig_n, np.nan)
+        influence_matrix = (self.regr_basis.dot(proj_matrix))
+        trace = self.order
+        for i in range(sig_n):
+            residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
+            gcv[i] = 1 / n * np.nansum(residuals ** 2) / (1 - trace / n) ** 2  # Generated cross validation
+        print('gcvlist', gcv)
+        # # gccv score with genarela correlated cross validation C is calc with outer(res, res)
+        # sig_n = signal.size
+        # n = self.n_support
+        # gccv = np.full(sig_n, np.nan)
+        # influence_matrix = (self.regr_basis.dot(proj_matrix))
+        # for i in range(sig_n):
+        #     s = influence_matrix
+        #     y = np.dot(influence_matrix, y_stacks.T[:,i])
+        #     x = y_stacks.T[:, i]
+        #     res = x - y
+        #     sig = np.std(res)
+        #     if sig > 0:
+        #         c = np.outer(res, res)/sig
+        #         gccv[i] = 1 / n * np.nansum(res ** 2) / (
+        #                     1 - sum(np.diag(2 * s.dot(c) - np.dot(s.dot(c), s.T))) / n) ** 2
+        #     else:
+        #         gccv[i] = 0
+        #
+        # print('gccv', gccv)
+        # print('score', np.nanmean(gccv))
 
-        print('sizeofREs', res.shape)
-        gcv_score = (1/n) * np.nansum((residuals.values/(1 - trace/n))**2)
-        print('score: ', gcv_score, gcv_sc)
+        # # gcv score with overall smooth matrix
+        # sig_n = len(signal)
+        # sm = np.full((sig_n, sig_n+self.n_support-1), 0.0)
+        # for i in range(sig_n):
+        #     ni = 0
+        #     if self.n_support % 2 == 1:
+        #         ni = 0
+        #     sm[i, i:self.n_support+i+ni] = proj_matrix[0, :]
+        # # sig = np.std(residuals)
+        # # c = np.outer(residuals, residuals)/(sig+0.00001)
+        # # smc = sm.T.dot(c)
+        # #gccvg = 1 / sig_n * np.nansum((residuals) ** 2) / (1 - sum(np.diag(2 * smc) - np.diag(np.dot(smc, sm))) / sig_n) ** 2
+        # #print(sm)
+        # #print(gccvg)
+        # trace = sum(np.diag(sm, 1))
+        # # print('sizeofREs', res.shape)
+        # gcv_score = (1/sig_n) * np.nansum((residuals/(1 - trace/sig_n))**2)
+        # # print('score: ', gcv_score, gcv_sc)
 
-        return np.mean(gccv)  # np.mean(gcv_sc)
+        return np.max(gcv)  # np.mean(gcv_sc)
 
     def sigma_eps_estimation(self, raw, filtered, show_results=False):
         """ Extract the variance of the residuals
@@ -553,13 +604,24 @@ class GeneralQSE(object):
 
         if self.bw_estimation is True:
             # methods: TNC, SLSQP, Nelder-Mead, COBYLA, L-BFGS-B
-            cons = ({'type': 'eq', 'fun': lambda x: max(x-int(x))},)
+            #cons = ({'type': 'eq', 'fun': lambda x: max(x-int(x))},)
+            # minimum = minimize(self.pmse_gcv, bw_init, method='Nelder-Mead', args=(signal,))
             # minimum = minimize(self.pmse_gcv, bw_init, method='SLSQP', args=(signal,), bounds=((3, None),), constraints=cons)  # , options={'xatol': 1.0})
-            minimum = minimize(self.pmse_gcv, bw_init, method='COBYLA', args=(signal,))
-            #minimum = minimize(self.pmse_gcv, bw_init, method='L-BFGS-B', args=(signal,), bounds=((3, None),))
+            # minimum = minimize(self.pmse_gcv, bw_init, method='COBYLA', args=(signal,))
+            # minimum = minimize(self.pmse_gcv, bw_init, method='L-BFGS-B', args=(signal,), bounds=((3, None),))
             # minimum = fmin(self.pmse_gcv, bw_init, args=(signal, ), xtol=1)
-            print(minimum)
-            self.n_support = int(minimum['x'])
+            # print(minimum)
+            hs = np.linspace(bw_init/20, bw_init*2, dtype='int16')
+            print(hs)
+            maxgcv = np.full(len(hs), np.nan)
+            for j, n in enumerate(hs):
+                maxgcv[j] = self.pmse_gcv(n, signal)
+
+            plt.figure(4)
+            plt.plot(np.array(hs), maxgcv)
+            plt.show()
+
+            self.n_support = hs[np.argmin(maxgcv)]  # int(minimum['x'])
             self.delay = (self.n_support - 1)/2
 
             print('best bandwidth: ', self.n_support)
@@ -653,15 +715,17 @@ if __name__ == '__main__':
     df = df.interpolate()
     time1 = df['nr']
     y = df['flood_index'].values
-    # y = df['sensor_value'].values
+    #y = df['sensor_value'].values
 
     # Part II. Algorithm setup and run
     # A. Setup and Initialization with tunning parameters
-    lan = 0.9
-    trans = [['Q0', 'L+', 0.5*lan], ['Q0', 'Q0', 0.5*lan], ['Q0', 'Q+', 0.0], ['L+', 'U+', 0.1*lan], ['U+', 'L+', 1.0*lan], ['U+', 'Q0', 0.01*lan],
-             ['L+', 'L+', 1.0*lan], ['U+', 'U+', 1.0*lan], ['Q+', 'Q+', 0.5*lan], ['L+', 'Q+', 0.5*lan]]
+    lan = 1.0
+    trans1 = [['Q0', 'Q0', 0.50*lan], ['Q0', 'L+', 0.00*lan], ['Q0', 'U+', 0.50*lan], ['Q0', 'F+', 0.00*lan],
+              ['L+', 'Q0', 0.25*lan], ['L+', 'L+', 0.25*lan], ['L+', 'U+', 0.25*lan], ['L+', 'F+', 0.25*lan],
+              ['U+', 'Q0', 0.25*lan], ['U+', 'L+', 0.25*lan], ['U+', 'U+', 0.25*lan], ['U+', 'F+', 0.25*lan],
+              ['F+', 'Q0', 0.00*lan], ['F+', 'L+', 0.33*lan], ['F+', 'U+', 0.33*lan], ['F+', 'F+', 0.33*lan]]
 
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans, bw_estimation=True, n_support=100)
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.09, transitions=trans1, bw_estimation=True, n_support=None)
 
     # B. Run algorithms
     t = time.process_time()
