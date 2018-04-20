@@ -44,10 +44,8 @@ __all__ = ['order_validation', 'kernel_validation', 'non_negative_validation', '
            'generate_trans_matrix', 'GeneralQSE']
 
 # ToDo: indicate that now not online but offline
-# ToDo: make a GitHub push with empty data and make local commits with messages
-# ToDo: solve Problem that probabilty of primitives converge to zero for y2
-# ToDo: make signal aritifically longer by interpolating or wrapping existing data
 # ToDo: make code also workable for Batch processing
+# ToDo: make sigma for each point different
 # ToDo: better handlying of delay
 
 
@@ -212,6 +210,9 @@ class GeneralQSE(object):
         'L':  ['ignore', 'neg',    'ignore'],  # 'lower']
     }
 
+    # Precision of computer calculations, needed to prevent zero division
+    precision = float(1e-16)
+
     def __init__(self, kernel='tricube', order=3, delta=0.05, transitions=allowed_trans, n_support=None, bw_estimation=False):
         # initialisation of kernel regression properties
         self.bw_estimation = bw_estimation
@@ -273,7 +274,7 @@ class GeneralQSE(object):
 
         return proj_matrix
 
-    def coefficient_uncertainty(self, proj_matrix, sigma_eps, dim):
+    def coefficient_uncertainty(self, proj_matrix, y_stacks):
         """
         Get uncertainity of each polynom coefficient by taking diagonal entries of covariance matrix
 
@@ -286,12 +287,20 @@ class GeneralQSE(object):
             standard deviation of each coefficient in every time step
 
         """
-        # uncertainty:
-        sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
-        stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
-        stdev_b = stdev_b[0:self.coeff_nr]
+        sig_n = y_stacks.shape[0]
+        influence_matrix = (self.regr_basis.dot(proj_matrix))
+        sigmas = np.full((sig_n, self.coeff_nr), np.nan)
 
-        return np.tile(stdev_b, (dim, 1))
+        for i in range(sig_n):
+            residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
+            sigma_eps = max(np.std(residuals), self.precision)
+            sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
+            stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
+            stdev_b = stdev_b[0:self.coeff_nr]
+
+            sigmas[i, :] = stdev_b
+
+        return sigmas
 
     def initialize_bandwidth(self, signal):
         """
@@ -385,7 +394,8 @@ class GeneralQSE(object):
         # Convert regression coefficients to probabilities for qualitative state
         prob_p = norm.logcdf(b - deltas)
         prob_n = norm.logcdf(-b - deltas)
-        prob_0 = norm.logcdf(1 - np.exp(prob_p) - np.exp(prob_n))
+        prob_pn = norm.logcdf(deltas - b)
+        prob_0 = prob_pn + np.log1p(-np.exp(prob_n-prob_pn))
 
         params = {'pos': prob_p, 'neg': prob_n, 'zero': prob_0, 'ignore': np.zeros(b.shape)}
 
@@ -397,7 +407,7 @@ class GeneralQSE(object):
             prob = [params[sign][:, j] for j, sign in enumerate(self.all_primitives[prim]) if j < self.coeff_nr]
             py[:, i] = np.sum(prob, axis=0)
 
-        return np.exp(py)
+        return py
 
     def estimate_states(self, primitive_prob, states):
         """
@@ -413,9 +423,9 @@ class GeneralQSE(object):
         """
         if not np.any(np.isnan(primitive_prob)):
             trans_states = np.dot(self.trans_matrix, states)
-            states = primitive_prob * trans_states
-            states = states / np.sum(states)
-
+            states = primitive_prob + np.log(trans_states)
+            prob_n = states - np.max(states)  # introduce scaling with max value for normalisation afterwards
+            states = np.exp(prob_n) / sum(np.exp(prob_n))
         return states
 
     def pmse_gcv(self, bw, signal):
@@ -563,9 +573,7 @@ class GeneralQSE(object):
 
         """
         # raw = np.delete(raw, np.arange(self.n_support-1))
-        raw = pd.Series(raw)
-        filtered = pd.Series(filtered)
-        residuals = raw - filtered  # .shift(-int(self.delay))
+        residuals = pd.Series(raw - filtered)  # .shift(-int(self.delay))
         # print(np.cov((raw.values, filtered.values), rowvar=0))
         if show_results is True:
             plt.figure(3)
@@ -622,14 +630,13 @@ class GeneralQSE(object):
             print('best bandwidth: ', self.n_support)
 
         proj_matrix = self.get_projection_matrix()
-        all_features, _ = self.predict_features(signal, proj_matrix)
+        all_features, y_stacks = self.predict_features(signal, proj_matrix)
 
-        eval_length = signal.size
-        # extract epsilon by calculating residuals between raw signal and filtered signal
-        sigma_eps = self.sigma_eps_estimation(signal, all_features[:, 0])
+        # # extract epsilon by calculating residuals between raw signal and filtered signal
+        # sigma_eps= self.sigma_eps_estimation(signal, all_features[:, 0])
 
         # redo kernel loop now with new estimated sigma calculated out of residuals
-        all_stdev = self.coefficient_uncertainty(proj_matrix, sigma_eps, eval_length)
+        all_stdev = self.coefficient_uncertainty(proj_matrix, y_stacks)
 
         # calculate the probabilieties out of features and stdev
         all_primitive_prob = self.infer_probabilities(all_features, all_stdev)
@@ -641,8 +648,7 @@ class GeneralQSE(object):
             states = self.estimate_states(prim_prob, states)
             all_states[i, :] = states
 
-        # store the results
-        memory = np.hstack((all_features, all_stdev, all_primitive_prob, all_states))
+        memory = np.hstack((all_features, all_stdev, np.exp(all_primitive_prob), all_states))
 
         return memory
 
@@ -691,11 +697,11 @@ class GeneralQSE(object):
 
         # plot feature derivatives and their confidence interval
         plt.figure(2)
-        for i in range(3):
-            plt.subplot(3, 1, i+1)
+        for i in range(self.coeff_nr):
+            plt.subplot(self.coeff_nr, 1, i+1)
             plt.plot(nr, memory[:, i], '-')
-            plt.plot(nr, memory[:, i] + 2 * memory[:, self.prim_nr+i], '--')
-            plt.plot(nr, memory[:, i] - 2 * memory[:, self.prim_nr+i], '--')
+            plt.plot(nr, memory[:, i] + 2 * memory[:, self.coeff_nr+i], '--')
+            plt.plot(nr, memory[:, i] - 2 * memory[:, self.coeff_nr+i], '--')
 
             plt.xlabel('Sample index [-]')
             plt.ylabel('derivative: ' + str(i))
@@ -709,18 +715,23 @@ if __name__ == '__main__':
     df = pd.read_csv('data/cam1_intra_0_5_10__ly4ftr16__cam1_0_5_10.csv', sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
     time1 = df['nr']
-    #y = df['flood_index'].values
-    y = df['sensor_value'].values
+    y = df['flood_index'].values
+    #y = df['sensor_value'].values
 
     # Part II. Algorithm setup and run
     # A. Setup and Initialization with tunning parameters
-    lan = 1.0
-    trans1 = [['Q0', 'Q0', 0.50*lan], ['Q0', 'L+', 0.00*lan], ['Q0', 'U+', 0.50*lan], ['Q0', 'F+', 0.00*lan],
-              ['L+', 'Q0', 0.25*lan], ['L+', 'L+', 0.25*lan], ['L+', 'U+', 0.25*lan], ['L+', 'F+', 0.25*lan],
-              ['U+', 'Q0', 0.25*lan], ['U+', 'L+', 0.25*lan], ['U+', 'U+', 0.25*lan], ['U+', 'F+', 0.25*lan],
-              ['F+', 'Q0', 0.00*lan], ['F+', 'L+', 0.33*lan], ['F+', 'U+', 0.33*lan], ['F+', 'F+', 0.33*lan]]
+    epsi = 0.000001
+    trans1 = [['Q0', 'Q0', 0.50], ['Q0', 'L+', epsi], ['Q0', 'U+', 0.50], ['Q0', 'F+', epsi],
+              ['L+', 'Q0', 0.25], ['L+', 'L+', 0.25], ['L+', 'U+', 0.25], ['L+', 'F+', 0.25],
+              ['U+', 'Q0', epsi], ['U+', 'L+', 0.33], ['U+', 'U+', 0.33], ['U+', 'F+', 0.33],
+              ['F+', 'Q0', epsi], ['F+', 'L+', 0.33], ['F+', 'U+', 0.33], ['F+', 'F+', 0.33]]
 
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.09, transitions=trans1, bw_estimation=False, n_support=200)
+    trans2 = [['Q0', 'Q0', 0.50], ['Q0', 'L+', epsi], ['Q0', 'U+', 0.50], ['Q0', 'F+', epsi],
+              ['L+', 'Q0', 0.33], ['L+', 'L+', 0.33], ['L+', 'U+', epsi], ['L+', 'F+', 0.33],
+              ['U+', 'Q0', epsi], ['U+', 'L+', epsi], ['U+', 'U+', 0.50], ['U+', 'F+', 0.50],
+              ['F+', 'Q0', epsi], ['F+', 'L+', 0.33], ['F+', 'U+', 0.33], ['F+', 'F+', 0.33]]
+
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans2, bw_estimation=False, n_support=200)
 
     # B. Run algorithms
     t = time.process_time()
