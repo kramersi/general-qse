@@ -33,7 +33,6 @@ If not, see <http://www.gnu.org/licenses/>.
 
 import numpy as np
 import pandas as pd
-from scipy.special import erf
 from scipy.stats import norm
 from scipy.optimize import minimize
 import matplotlib.pylab as plt
@@ -45,7 +44,6 @@ __all__ = ['order_validation', 'kernel_validation', 'non_negative_validation', '
 
 # ToDo: indicate that now not online but offline
 # ToDo: make code also workable for Batch processing
-# ToDo: make sigma for each point different
 # ToDo: better handlying of delay
 
 
@@ -319,7 +317,7 @@ class GeneralQSE(object):
         # print('ini_bw', init_bw)
         min_bw = 20
         init_bw = max(len(signal) * 0.05, min_bw) * stdev_data/mean_data
-        print('bw initialized', init_bw)
+        print('initial bandwidth: ', init_bw)
         self.delay = (init_bw - 1)/2
         self.n_support = int(init_bw)
 
@@ -448,7 +446,7 @@ class GeneralQSE(object):
         else:
             self.n_support = bw
 
-        print('n_support: ', self.n_support)
+        print('try bandwidth ... ', self.n_support)
 
         self.delay = (self.n_support-1)/2
 
@@ -517,7 +515,6 @@ class GeneralQSE(object):
         for i in range(sig_n):
             residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
             gcv[i] = 1 / n * np.nansum(residuals ** 2) / (1 - trace / n) ** 2  # Generated cross validation
-        print('gcvlist', gcv)
         # # gccv score with genarela correlated cross validation C is calc with outer(res, res)
         # sig_n = signal.size
         # n = self.n_support
@@ -615,19 +612,24 @@ class GeneralQSE(object):
             # minimum = fmin(self.pmse_gcv, bw_init, args=(signal, ), xtol=1)
             # print(minimum)
             hs = np.linspace(bw_init/20, bw_init*2, dtype='int16')
-            print(hs)
+
             maxgcv = np.full(len(hs), np.nan)
             for j, n in enumerate(hs):
                 maxgcv[j] = self.pmse_gcv(n, signal)
 
-            plt.figure(4)
+            gcv_df = pd.DataFrame({'bandwidth': np.array(hs), 'max_gcv': maxgcv})
+            gcv_df.to_csv('gcv_results/gcv.csv')
+
+            plt.figure(3)
             plt.plot(np.array(hs), maxgcv)
+            plt.xlabel('Bandwidth [#]')
+            plt.ylabel('GCV-Score')
             plt.show()
 
             self.n_support = hs[np.argmin(maxgcv)]  # int(minimum['x'])
             self.delay = (self.n_support - 1)/2
 
-            print('best bandwidth: ', self.n_support)
+            print('best bandwidth found: ', self.n_support)
 
         proj_matrix = self.get_projection_matrix()
         all_features, y_stacks = self.predict_features(signal, proj_matrix)
