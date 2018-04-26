@@ -1,8 +1,8 @@
 """
-Qualitative State Estimation (QSE)
+Generalized Qualitative State Estimation (GQSE)
 
-This Script is based on the QSE algorithme, which Kris Villez implemented in Matlab. This method based on the earlier
-developed Qualtiative Path estimation is further generalized by allowing all 39 different combinations of signs between
+This Script is based on the QSE algorithm, which Kris Villez implemented in Matlab. This method based on the earlier
+developed Qualitative Path estimation is further generalized by allowing all 39 different combinations of signs between
 signal, first and second derivative and implements possibility
 to choose from different kernels. Furthermore it is capable of handling different polynom order bigger than 1. This
 version use is two times faster, because not calculated over a loop, but directly applying an array of moving windows.
@@ -484,7 +484,7 @@ class GeneralQSE(object):
         # calculating influence matrix, which is needed for calculating gcv afterwards
         # basis = self.regr_basis
         # w = self.w
-        # # ToDo: Simplify because in linear projection trace of infl matrix is always degegree of freedom (order)
+        # # Simplify because in linear projection trace of infl matrix is always degegree of freedom (order)
         # influence_matrix = (basis.dot(proj_matrix))
         # trace = sum(np.diag(influence_matrix))
         # sig_n = len(signal)
