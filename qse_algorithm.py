@@ -44,7 +44,6 @@ __all__ = ['order_validation', 'kernel_validation', 'non_negative_validation', '
 
 # ToDo: indicate that now not online but offline
 # ToDo: make code also workable for Batch processing
-# ToDo: better handlying of delay
 
 
 def rolling_window(a, window):
@@ -235,6 +234,15 @@ class GeneralQSE(object):
         self.prim_nr = len(primitives)
         self.trans_matrix = generate_trans_matrix(transitions, primitives)
 
+    def set_bandwidth(self, bw):
+        # check, because in fmin bw is passed as a ndarray and not an integer
+        if isinstance(bw, np.ndarray):
+            self.n_support = int(bw[0])
+        else:
+            self.n_support = bw
+
+        self.delay = (bw - 1) / 2
+
     def get_projection_matrix(self):
         """
         calculates the projection matrix for kernel regression, which is dependend only on bandwith of kernel
@@ -318,8 +326,7 @@ class GeneralQSE(object):
         min_bw = 20
         init_bw = max(len(signal) * 0.05, min_bw) * stdev_data/mean_data
         print('initial bandwidth: ', init_bw)
-        self.delay = (init_bw - 1)/2
-        self.n_support = int(init_bw)
+        self.set_bandwidth(init_bw)
 
         return int(init_bw)
 
@@ -440,15 +447,8 @@ class GeneralQSE(object):
             estimated error introduced by gcv
 
         """
-        # check, because in fmin bw is passed as a ndarray and not an integer
-        if isinstance(bw, np.ndarray):
-            self.n_support = int(bw[0])
-        else:
-            self.n_support = bw
-
-        print('try bandwidth ... ', self.n_support)
-
-        self.delay = (self.n_support-1)/2
+        self.set_bandwidth(bw)
+        print('try bandwidth ... ', bw)
 
         # calculate projection matrix and update regr_basis and weights changed by new n_support
         proj_matrix = self.get_projection_matrix()
@@ -617,8 +617,8 @@ class GeneralQSE(object):
             for j, n in enumerate(hs):
                 maxgcv[j] = self.pmse_gcv(n, signal)
 
-            gcv_df = pd.DataFrame({'bandwidth': np.array(hs), 'max_gcv': maxgcv})
-            gcv_df.to_csv('gcv_results/gcv.csv')
+            # gcv_df = pd.DataFrame({'bandwidth': np.array(hs), 'max_gcv': maxgcv})
+            # gcv_df.to_csv('gcv_results/gcv.csv')
 
             plt.figure(3)
             plt.plot(np.array(hs), maxgcv)
@@ -626,9 +626,7 @@ class GeneralQSE(object):
             plt.ylabel('GCV-Score')
             plt.show()
 
-            self.n_support = hs[np.argmin(maxgcv)]  # int(minimum['x'])
-            self.delay = (self.n_support - 1)/2
-
+            self.set_bandwidth(hs[np.argmin(maxgcv)])
             print('best bandwidth found: ', self.n_support)
 
         proj_matrix = self.get_projection_matrix()
@@ -712,13 +710,14 @@ class GeneralQSE(object):
 
 
 if __name__ == '__main__':
+    file = 'cam1_intra_0_0.2_0.4__ly4ftr16w2__cam1_0_0.2_0.4.csv'
 
     # Part I. load data from csv
-    df = pd.read_csv('data/cam1_intra_0_5_10__ly4ftr16__cam1_0_5_10.csv', sep=',', dtype={'sensor_value': np.float64})
+    df = pd.read_csv('data/'+file, sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
-    time1 = df['nr']
-    y = df['flood_index'].values
-    #y = df['sensor_value'].values
+
+    #y = df['flood_index'].values
+    y = df['sensor_value'].values
 
     # Part II. Algorithm setup and run
     # A. Setup and Initialization with tunning parameters
@@ -733,7 +732,7 @@ if __name__ == '__main__':
               ['U+', 'Q0', epsi], ['U+', 'L+', epsi], ['U+', 'U+', 0.50], ['U+', 'F+', 0.50],
               ['F+', 'Q0', epsi], ['F+', 'L+', 0.33], ['F+', 'U+', 0.33], ['F+', 'F+', 0.33]]
 
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans2, bw_estimation=False, n_support=200)
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans2, bw_estimation=True, n_support=300)
 
     # B. Run algorithms
     t = time.process_time()
