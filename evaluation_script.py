@@ -5,6 +5,9 @@ from diff_metrics import square_diff, cosine_diff
 from scipy.optimize import minimize
 from os import listdir
 
+def information_thres():
+    # ToDo: include a threshold for the spearman correlation if to low, don't use refernce and sofi pair for tuning parameter.
+    return 1
 
 def find_csv_filenames(path_to_dir, suffix=".csv" ):
     filenames = listdir(path_to_dir)

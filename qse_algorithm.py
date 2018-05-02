@@ -295,16 +295,24 @@ class GeneralQSE(object):
         """
         sig_n = y_stacks.shape[0]
         influence_matrix = (self.regr_basis.dot(proj_matrix))
-        sigmas = np.full((sig_n, self.coeff_nr), np.nan)
-
+        if y_stacks.ndim == 1:
+            sigmas = np.full(self.coeff_nr, np.nan)
+        else:
+            sigmas = np.full((sig_n, self.coeff_nr), np.nan)
         for i in range(sig_n):
-            residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
+            if y_stacks.ndim == 1:
+                residuals = y_stacks.T[i] - np.dot(influence_matrix, y_stacks.T[i])
+            else:
+                residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
             sigma_eps = max(np.std(residuals), self.precision)
             sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
             stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
             stdev_b = stdev_b[0:self.coeff_nr]
+            if y_stacks.ndim == 1:
+                sigmas = stdev_b
 
-            sigmas[i, :] = stdev_b
+            else:
+                sigmas[i, :] = stdev_b
 
         return sigmas
 
@@ -341,7 +349,7 @@ class GeneralQSE(object):
 
         return np.array(states / np.sum(states))
 
-    def predict_features(self, signal, proj_matrix):
+    def predict_features(self, signal, proj_matrix, only=None):
         """
         Make polynomial kernel regression by creating array of all moving windows, calculating projection matrix and
         calculating.
@@ -377,10 +385,15 @@ class GeneralQSE(object):
         # n*m array of moving windows, n=signal_length, m=n_support
         y_stacks = rolling_window(extended_signal, self.n_support)
 
+        if only is not None:
+            y_stacks = y_stacks[only]
         # only if all values are not nan, but this is not the case because signal interpolated at beginning
         features = proj_matrix.dot(y_stacks.T).T
-
-        return features[:, 0:self.coeff_nr], y_stacks
+        if only is not None:
+            feat = features[0:self.coeff_nr]
+        else:
+            feat = features[:, 0:self.coeff_nr]
+        return feat, y_stacks
 
     def infer_probabilities(self, features, stdev):
         """ calculate probabilities of selected primitives out of polynom features and their standard deviation
@@ -585,6 +598,74 @@ class GeneralQSE(object):
 
         return residuals.std()
 
+    def confidence_interval(self, bw_init, signal, tau=10.0, r_thres=-999.0):
+        """
+        Use RICI method for finding best bandwidths and smooth it to reduce jumps. Proposed in paper A Signal Denoising Method Based
+        on the Improved ICI Rule by Jonatan Lerga, Miroslav Vrankic, and Victor Sucic (2008)
+
+        bw_init: initial bandwidht
+        signal: 1-D array of noisy signal values
+        tau: confidence-band width
+        r_thres: threshold of relative bandwidth
+        :return:
+        """
+        hs = np.linspace(bw_init/20, bw_init*2, dtype='int16')
+        nh = len(hs)
+        nx = len(signal)
+
+        upper = np.full((nx, nh), np.nan)
+        lower = np.full((nx, nh), np.nan)
+        dim = (nx, self.coeff_nr, nh)
+        all_stdev = np.full(dim, np.nan)
+        all_features = np.full(dim, np.nan)
+        for j, h in enumerate(hs):
+            print('calculate bandwidth... ', h)
+            self.set_bandwidth(h)
+            proj_matrix = self.get_projection_matrix()
+            features, y_stacks = self.predict_features(signal, proj_matrix)
+            stdev = self.coefficient_uncertainty(proj_matrix, y_stacks)
+            stdev_0 = stdev[:, 0]
+            feature_0 = features[:, 0]
+            upper[:, j] = feature_0 + tau * stdev_0
+            lower[:, j] = feature_0 - tau * stdev_0
+            all_stdev[:, :, j] = stdev
+            all_features[:, :, j] = features
+
+        upper_min = np.minimum.accumulate(upper, axis=1)
+        lower_max = np.maximum.accumulate(lower, axis=1)
+
+        # take max of upper minimum which is bigger than the lower_max
+        #mask = (upper_min > lower_max)
+        #subset_idx = np.argmax(upper_min[mask])
+        #parent_idx = np.arange(upper_min.shape[0])[mask][subset_idx]
+        rel_crit = (upper_min - lower_max) / (2 * tau * all_stdev[:, 0, :])
+
+        best_indexes = np.argmax(np.where((upper_min > lower_max) & (rel_crit >= r_thres), False, True), axis=1)
+
+        smoothed_ind = pd.Series(best_indexes).rolling(10, center=True).max()
+        smoothed_ind = smoothed_ind.fillna(method='ffill')
+        smoothed_ind = smoothed_ind.fillna(method='bfill').values.astype(int)
+
+        nx_arange = np.arange(nx)
+        sel_stdev = all_stdev[nx_arange, :, smoothed_ind]
+        sel_features = all_features[nx_arange, :, smoothed_ind]
+
+        best_hs = [hs[i - 1] if i != 0 else hs[i] for i in smoothed_ind]
+
+        nans = np.full(len(best_hs), np.nan)
+        nans[0::50] = best_hs[0::50]
+        ds = pd.Series(nans)
+
+        plt.figure(4)
+        plt.plot(best_hs)
+        plt.plot(ds)
+        plt.plot(smoothed_ind)
+        plt.xlabel('Time []')
+        plt.ylabel('Best Bandwidth')
+        plt.show()
+
+        return sel_features, sel_stdev  # rs.values.astype(int)
+
     def run(self, signal):
         """
         Run the QSE algorithme, by iterating over each data point in the signal
@@ -629,14 +710,22 @@ class GeneralQSE(object):
             self.set_bandwidth(hs[np.argmin(maxgcv)])
             print('best bandwidth found: ', self.n_support)
 
-        proj_matrix = self.get_projection_matrix()
-        all_features, y_stacks = self.predict_features(signal, proj_matrix)
+        all_features, all_stdev = self.confidence_interval(bw_init, signal, tau=2, r_thres=-999)
+        #n = len(signal)
+        #all_features = np.full((n, self.coeff_nr), np.nan)
+        #all_stdev = np.full((n, self.coeff_nr), np.nan)
 
-        # # extract epsilon by calculating residuals between raw signal and filtered signal
-        # sigma_eps= self.sigma_eps_estimation(signal, all_features[:, 0])
+        #for j, h in enumerate(best_hs):
+            #print('Fortschritt: ', j)
+            #self.set_bandwidth(h)
+            #proj_matrix = self.get_projection_matrix()
+            # all_features[j, :], y_stacks = self.predict_features(signal, proj_matrix, only=j)
 
-        # redo kernel loop now with new estimated sigma calculated out of residuals
-        all_stdev = self.coefficient_uncertainty(proj_matrix, y_stacks)
+            # # extract epsilon by calculating residuals between raw signal and filtered signal
+            # sigma_eps= self.sigma_eps_estimation(signal, all_features[:, 0])
+
+            # redo kernel loop now with new estimated sigma calculated out of residuals
+            #all_stdev[j, :] = self.coefficient_uncertainty(proj_matrix, y_stacks)
 
         # calculate the probabilieties out of features and stdev
         all_primitive_prob = self.infer_probabilities(all_features, all_stdev)
@@ -716,8 +805,8 @@ if __name__ == '__main__':
     df = pd.read_csv('data/'+file, sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
 
-    #y = df['flood_index'].values
-    y = df['sensor_value'].values
+    y = df['flood_index'].values
+    #y = df['sensor_value'].values
 
     # Part II. Algorithm setup and run
     # A. Setup and Initialization with tunning parameters
@@ -732,7 +821,7 @@ if __name__ == '__main__':
               ['U+', 'Q0', epsi], ['U+', 'L+', epsi], ['U+', 'U+', 0.50], ['U+', 'F+', 0.50],
               ['F+', 'Q0', epsi], ['F+', 'L+', 0.33], ['F+', 'U+', 0.33], ['F+', 'F+', 0.33]]
 
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans2, bw_estimation=True, n_support=300)
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans2, bw_estimation=False, n_support=200)
 
     # B. Run algorithms
     t = time.process_time()
