@@ -53,6 +53,13 @@ def rolling_window(a, window):
     return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides, writeable=False)
 
 
+def stdev_estimation(signal):
+    """ estimates the standard deviation of a noisy signal, neglecting zero occurence. """
+    diffs = np.absolute(np.diff(signal))
+    non_zero_diff = diffs[np.nonzero(diffs)]
+    return np.median(non_zero_diff) / 0.9539
+
+
 def order_validation(order):
     """
     Validate the order. If it's under 2 then raise a ValueError
@@ -280,14 +287,14 @@ class GeneralQSE(object):
 
         return proj_matrix
 
-    def coefficient_uncertainty(self, proj_matrix, y_stacks):
+    def coefficient_uncertainty(self, proj_matrix, y_stacks, min_stdev=precision):
         """
         Get uncertainity of each polynom coefficient by taking diagonal entries of covariance matrix
 
         Arguments:
-            dim (int): dimension of filtered signal
-            sigma_eps (float): variance of error of residuals (measurment error)
+            y_stacks (float): variance of error of residuals (measurment error)
             proj_matrix (ndarray): projection matrix
+            min_stdev (float): minimal standard deviation
 
         Retruns:
             standard deviation of each coefficient in every time step
@@ -299,7 +306,7 @@ class GeneralQSE(object):
 
         for i in range(sig_n):
             residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
-            sigma_eps = max(np.std(residuals), self.precision)
+            sigma_eps = max(np.std(residuals), min_stdev)
             sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
             stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
             stdev_b = stdev_b[0:self.coeff_nr]
@@ -469,7 +476,7 @@ class GeneralQSE(object):
         return np.max(gcv)  # np.mean(gcv_sc)
 
     def sigma_eps_estimation(self, raw, filtered, show_results=False):
-        """ Extract the variance of the residuals
+        """ Extract the variance of the residual
 
         Attributes:
             raw (array): raw signal vector
@@ -496,7 +503,7 @@ class GeneralQSE(object):
 
         return residuals.std()
 
-    def confidence_interval(self, bw_init, signal, tau=10.0, r_thres=-999.0):
+    def rici_rule(self, bw_init, signal, tau=4.0, r_thres=0.5):
         """
         Use RICI method for finding best bandwidths and smooth it to reduce jumps. Proposed in paper A Signal Denoising Method Based
         on the Improved ICI Rule by Jonatan Lerga, Miroslav Vrankic, and Victor Sucic (2008)
@@ -507,7 +514,7 @@ class GeneralQSE(object):
         r_thres: threshold of relative bandwidth
         :return:
         """
-        hs = np.linspace(bw_init/20, bw_init*2, dtype='int16')
+        hs = np.linspace(bw_init/10, bw_init*2, dtype='int16')
         nh = len(hs)
         nx = len(signal)
 
@@ -516,16 +523,17 @@ class GeneralQSE(object):
         dim = (nx, self.coeff_nr, nh)
         all_stdev = np.full(dim, np.nan)
         all_features = np.full(dim, np.nan)
+        stdev_est = stdev_estimation(signal)
         for j, h in enumerate(hs):
             print('calculate bandwidth... ', h)
             self.set_bandwidth(h)
             proj_matrix = self.get_projection_matrix()
             features, y_stacks = self.predict_features(signal, proj_matrix)
-            stdev = self.coefficient_uncertainty(proj_matrix, y_stacks)
+            stdev = self.coefficient_uncertainty(proj_matrix, y_stacks, min_stdev=stdev_est)
             stdev_0 = stdev[:, 0]
             feature_0 = features[:, 0]
-            upper[:, j] = feature_0 + tau * stdev_0
-            lower[:, j] = feature_0 - tau * stdev_0
+            upper[:, j] = feature_0 + tau * stdev_est
+            lower[:, j] = feature_0 - tau * stdev_est
             all_stdev[:, :, j] = stdev
             all_features[:, :, j] = features
 
@@ -537,32 +545,37 @@ class GeneralQSE(object):
         #subset_idx = np.argmax(upper_min[mask])
         #parent_idx = np.arange(upper_min.shape[0])[mask][subset_idx]
         rel_crit = (upper_min - lower_max) / (2 * tau * all_stdev[:, 0, :])
+        #  ad& (rel_crit >= r_thres)
+        criteria_mask = upper_min <= lower_max
+        best_indexes = np.argmax(criteria_mask, axis=1)
 
-        best_indexes = np.argmax(np.where((upper_min > lower_max) & (rel_crit >= r_thres), False, True), axis=1)
+        # if all false then argmax just gives first but should take last index
+        best_indexes = np.array([-1 if idx == 0 and criteria_mask[j, idx] else idx for j, idx in enumerate(best_indexes)])
 
-        smoothed_ind = pd.Series(best_indexes).rolling(10, center=True).max()
+        # smooth the signal to an good
+        smoothed_ind = pd.Series(best_indexes).rolling(11, center=True).mean()
         smoothed_ind = smoothed_ind.fillna(method='ffill')
         smoothed_ind = smoothed_ind.fillna(method='bfill').values.astype(int)
 
         nx_arange = np.arange(nx)
-        sel_stdev = all_stdev[nx_arange, :, smoothed_ind]
-        sel_features = all_features[nx_arange, :, smoothed_ind]
+        sel_stdev = all_stdev[nx_arange, :, best_indexes]
+        sel_features = all_features[nx_arange, :, best_indexes]
 
-        best_hs = [hs[i - 1] if i != 0 else hs[i] for i in smoothed_ind]
+        best_bws = np.array([[hs[j] for j in best_indexes], [hs[i] for i in smoothed_ind]])
 
-        nans = np.full(len(best_hs), np.nan)
-        nans[0::50] = best_hs[0::50]
-        ds = pd.Series(nans)
+        # nans = np.full(len(best_hs), np.nan)
+        # nans[0::50] = best_hs[0::50]
+        # ds = pd.Series(nans)
 
-        plt.figure(4)
-        plt.plot(best_hs)
-        plt.plot(ds)
-        plt.plot(smoothed_ind)
-        plt.xlabel('Time []')
-        plt.ylabel('Best Bandwidth')
-        plt.show()
+        # plt.figure(4)
+        # plt.plot(best_hs)
+        # plt.plot(ds)
+        # plt.plot(smoothed_ind)
+        # plt.xlabel('Time []')
+        # plt.ylabel('Best Bandwidth')
+        # plt.show()
 
-        return sel_features, sel_stdev  # rs.values.astype(int)
+        return sel_features, sel_stdev, best_bws.T  # rs.values.astype(int)
 
     def run(self, signal):
         """
@@ -608,22 +621,8 @@ class GeneralQSE(object):
             self.set_bandwidth(hs[np.argmin(maxgcv)])
             print('best bandwidth found: ', self.n_support)
 
-        all_features, all_stdev = self.confidence_interval(bw_init, signal, tau=2, r_thres=-999)
-        #n = len(signal)
-        #all_features = np.full((n, self.coeff_nr), np.nan)
-        #all_stdev = np.full((n, self.coeff_nr), np.nan)
-
-        #for j, h in enumerate(best_hs):
-            #print('Fortschritt: ', j)
-            #self.set_bandwidth(h)
-            #proj_matrix = self.get_projection_matrix()
-            # all_features[j, :], y_stacks = self.predict_features(signal, proj_matrix, only=j)
-
-            # # extract epsilon by calculating residuals between raw signal and filtered signal
-            # sigma_eps= self.sigma_eps_estimation(signal, all_features[:, 0])
-
-            # redo kernel loop now with new estimated sigma calculated out of residuals
-            #all_stdev[j, :] = self.coefficient_uncertainty(proj_matrix, y_stacks)
+        # featrues and stddev of variable bandwidth by applying the relative intersection of confidence intervals (RICI)
+        all_features, all_stdev, adaptive_bw = self.rici_rule(bw_init, signal, tau=4.0, r_thres=0.5)
 
         # calculate the probabilieties out of features and stdev
         all_primitive_prob = self.infer_probabilities(all_features, all_stdev)
@@ -635,7 +634,7 @@ class GeneralQSE(object):
             states = self.estimate_states(prim_prob, states)
             all_states[i, :] = states
 
-        memory = np.hstack((all_features, all_stdev, np.exp(all_primitive_prob), all_states))
+        memory = np.hstack((all_features, all_stdev, np.exp(all_primitive_prob), all_states, adaptive_bw))
 
         return memory
 
@@ -654,7 +653,7 @@ class GeneralQSE(object):
         plt.figure(1)
 
         # plot signal and filtered signal
-        p2 = plt.subplot(3, 1, 1)
+        p2 = plt.subplot(4, 1, 1)
         # plt.plot(nr, signal[self.n_support-2:-1], 'k-')
         plt.plot(nr, signal, 'k-')
         # plt.plot(nr - self.delay, memory[:, 0], 'b-')
@@ -663,9 +662,16 @@ class GeneralQSE(object):
         plt.ylabel('Signal value [-]')
         plt.legend(('raw signal', 'filtered signal'))
 
+        plt.subplot(4, 1, 2, sharex=p2)
+        plt.plot(nr, memory[:, -2])
+        plt.plot(nr, memory[:, -1])
+        plt.xlabel('Sample index [-]')
+        plt.xlabel('Bandwidth [-]')
+        plt.legend(('raw', 'smoothed'))
+
         # plot primitive probabilities
         colors = ['C0', 'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8', 'C9']
-        plt.subplot(3, 1, 2, sharex=p2)
+        plt.subplot(4, 1, 3, sharex=p2)
         # plt.plot(nr - self.delay, memory[:, prim_range], '-')
         for i, r in enumerate(prim_range):
             plt.plot(nr, memory[:, r], '-', color=colors[i])
@@ -674,7 +680,7 @@ class GeneralQSE(object):
         plt.legend(tuple(self.primitives))
 
         # plot states probabilities
-        plt.subplot(3, 1, 3, sharex=p2)
+        plt.subplot(4, 1, 4, sharex=p2)
         # plt.plot(nr - self.delay, memory[:, state_range], '-')
         for i, r in enumerate(state_range):
             plt.plot(nr, memory[:, r], '-', color=colors[i])
