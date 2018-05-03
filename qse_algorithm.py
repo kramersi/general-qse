@@ -295,24 +295,16 @@ class GeneralQSE(object):
         """
         sig_n = y_stacks.shape[0]
         influence_matrix = (self.regr_basis.dot(proj_matrix))
-        if y_stacks.ndim == 1:
-            sigmas = np.full(self.coeff_nr, np.nan)
-        else:
-            sigmas = np.full((sig_n, self.coeff_nr), np.nan)
+        sigmas = np.full((sig_n, self.coeff_nr), np.nan)
+
         for i in range(sig_n):
-            if y_stacks.ndim == 1:
-                residuals = y_stacks.T[i] - np.dot(influence_matrix, y_stacks.T[i])
-            else:
-                residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
+            residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
             sigma_eps = max(np.std(residuals), self.precision)
             sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
             stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
             stdev_b = stdev_b[0:self.coeff_nr]
-            if y_stacks.ndim == 1:
-                sigmas = stdev_b
 
-            else:
-                sigmas[i, :] = stdev_b
+            sigmas[i, :] = stdev_b
 
         return sigmas
 
@@ -349,7 +341,7 @@ class GeneralQSE(object):
 
         return np.array(states / np.sum(states))
 
-    def predict_features(self, signal, proj_matrix, only=None):
+    def predict_features(self, signal, proj_matrix):
         """
         Make polynomial kernel regression by creating array of all moving windows, calculating projection matrix and
         calculating.
@@ -385,15 +377,10 @@ class GeneralQSE(object):
         # n*m array of moving windows, n=signal_length, m=n_support
         y_stacks = rolling_window(extended_signal, self.n_support)
 
-        if only is not None:
-            y_stacks = y_stacks[only]
         # only if all values are not nan, but this is not the case because signal interpolated at beginning
         features = proj_matrix.dot(y_stacks.T).T
-        if only is not None:
-            feat = features[0:self.coeff_nr]
-        else:
-            feat = features[:, 0:self.coeff_nr]
-        return feat, y_stacks
+
+        return features[:, 0:self.coeff_nr], y_stacks
 
     def infer_probabilities(self, features, stdev):
         """ calculate probabilities of selected primitives out of polynom features and their standard deviation
@@ -469,56 +456,6 @@ class GeneralQSE(object):
         # make kernel regression by applying moving window of signal to projection matrix
         all_features, y_stacks = self.predict_features(signal, proj_matrix)
 
-        # # extend signal
-        # first = np.repeat(signal[0], self.delay)
-        # if self.n_support % 2 == 1:
-        #     last = np.repeat(signal[-1], self.delay)
-        # else:
-        #     last = np.repeat(signal[-1], self.delay + 1)
-        #
-        # ext_signal = np.concatenate((first, signal, last))
-
-
-        # make signals to equal length and shift it to calculate residuals
-        # raw = np.delete(signal, np.arange(self.n_support - 1))
-        # signal = pd.Series(signal)
-        # filtered = all_features[:, 0]
-        # residuals = signal - filtered  # .shift(-int(self.delay))
-        # #cov_mat = np.cov((signal, filtered), rowvar=0)
-        # print('resSumBef', np.nansum(residuals))
-        # plt.figure(4)
-        # plt.subplot(2, 1, 1)
-        # pd.Series(signal).plot()
-        # filtered.plot()
-        # plt.subplot(2, 1, 2)
-        # residuals.plot(kind='hist', bins=40)
-        # plt.show()
-
-        # calculating influence matrix, which is needed for calculating gcv afterwards
-        # basis = self.regr_basis
-        # w = self.w
-        # # Simplify because in linear projection trace of infl matrix is always degegree of freedom (order)
-        # influence_matrix = (basis.dot(proj_matrix))
-        # trace = sum(np.diag(influence_matrix))
-        # sig_n = len(signal)
-        # n = self.n_support
-        #trace = self.order
-        #neg_inf = np.eye(n) - influence_matrix
-        #n_inv = 1/n
-
-        # # gcv score with general cross validation
-        # n = signal.size
-        # gccv = np.full(n, np.nan)
-        # influence_matrix = (self.regr_basis.dot(proj_matrix))
-        # for i in range(self.n_support):
-        #     s = influence_matrix
-        #     y = np.dot(influence_matrix, y_stacks.T)[:,i]
-        #     x = y_stacks.T[:, i]
-        #     sig = np.std(x-y)
-        #     c = np.cov((x, y), rowvar=0)/sig
-        #     gccv[i] = 1/n * np.nansum((x-y)**2) / (1 - sum(np.diag(2*s.dot(c) - np.dot(s.dot(c),s.T)))/n)**2
-        # print('gccv', gccv)
-
         # gcv without cross correlation
         sig_n = signal.size
         n = self.n_support
@@ -528,45 +465,6 @@ class GeneralQSE(object):
         for i in range(sig_n):
             residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
             gcv[i] = 1 / n * np.nansum(residuals ** 2) / (1 - trace / n) ** 2  # Generated cross validation
-        # # gccv score with genarela correlated cross validation C is calc with outer(res, res)
-        # sig_n = signal.size
-        # n = self.n_support
-        # gccv = np.full(sig_n, np.nan)
-        # influence_matrix = (self.regr_basis.dot(proj_matrix))
-        # for i in range(sig_n):
-        #     s = influence_matrix
-        #     y = np.dot(influence_matrix, y_stacks.T[:,i])
-        #     x = y_stacks.T[:, i]
-        #     res = x - y
-        #     sig = np.std(res)
-        #     if sig > 0:
-        #         c = np.outer(res, res)/sig
-        #         gccv[i] = 1 / n * np.nansum(res ** 2) / (
-        #                     1 - sum(np.diag(2 * s.dot(c) - np.dot(s.dot(c), s.T))) / n) ** 2
-        #     else:
-        #         gccv[i] = 0
-        #
-        # print('gccv', gccv)
-        # print('score', np.nanmean(gccv))
-
-        # # gcv score with overall smooth matrix
-        # sig_n = len(signal)
-        # sm = np.full((sig_n, sig_n+self.n_support-1), 0.0)
-        # for i in range(sig_n):
-        #     ni = 0
-        #     if self.n_support % 2 == 1:
-        #         ni = 0
-        #     sm[i, i:self.n_support+i+ni] = proj_matrix[0, :]
-        # # sig = np.std(residuals)
-        # # c = np.outer(residuals, residuals)/(sig+0.00001)
-        # # smc = sm.T.dot(c)
-        # #gccvg = 1 / sig_n * np.nansum((residuals) ** 2) / (1 - sum(np.diag(2 * smc) - np.diag(np.dot(smc, sm))) / sig_n) ** 2
-        # #print(sm)
-        # #print(gccvg)
-        # trace = sum(np.diag(sm, 1))
-        # # print('sizeofREs', res.shape)
-        # gcv_score = (1/sig_n) * np.nansum((residuals/(1 - trace/sig_n))**2)
-        # # print('score: ', gcv_score, gcv_sc)
 
         return np.max(gcv)  # np.mean(gcv_sc)
 
