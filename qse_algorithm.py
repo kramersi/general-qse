@@ -60,6 +60,35 @@ def stdev_estimation(signal):
     return np.median(non_zero_diff) / 0.9539
 
 
+def sigma_eps_estimation(raw, filtered, show_results=False):
+    """ Extract the variance of the residual
+
+    Attributes:
+        raw (array): raw signal vector
+        filtered (array): filtered signal with polynomial kernel smoothing
+        show_results (bool): inidicates if plot of residuals should be plotted
+
+    Returns:
+        standard deviation of residuals
+
+    """
+    # raw = np.delete(raw, np.arange(self.n_support-1))
+    residuals = pd.Series(raw - filtered)  # .shift(-int(self.delay))
+    # print(np.cov((raw.values, filtered.values), rowvar=0))
+    if show_results is True:
+        plt.figure(3)
+        plt.subplot(3, 1, 1)
+        residuals.plot()
+        plt.subplot(3, 1, 2)
+        residuals.plot(kind='hist', bins=40)
+        plt.subplot(3, 1, 3)
+        raw.plot()
+        filtered.plot()
+        plt.show()
+
+    return residuals.std()
+
+
 def order_validation(order):
     """
     Validate the order. If it's under 2 then raise a ValueError
@@ -154,7 +183,9 @@ class GeneralQSE(object):
             Percent of the maximum signal value, 1st and 2nd derivative the Probability to be in zero state is 68%.
             better name could be zero_threshold
         n_support (int): initial length of support window (often called bandwidth in kernel regression)
-        bw_estimation (bool): indicates if bandwith should be estimated with cross validation or is user specific
+        bw_estimation (string): one of 'fix', 'gcv', 'ici', indicates if bandwidth should be fix, estimated with cross
+        validation or adaptive with ici method.
+
     """
     # define all the transitions each sublist has start primitive, end primitive and transition probability in it.
     allowed_trans = [['Q', 'U+', 0.5], ['U+', 'L+', 1], ['L+', 'U+', 0.5], ['L+', 'Q0+', 1]]
@@ -217,7 +248,7 @@ class GeneralQSE(object):
     # Precision of computer calculations, needed to prevent zero division
     precision = float(1e-16)
 
-    def __init__(self, kernel='tricube', order=3, delta=0.05, transitions=allowed_trans, n_support=None, bw_estimation=False):
+    def __init__(self, kernel='tricube', order=3, delta=0.05, transitions=allowed_trans, n_support=None, bw_estimation='fix'):
         # initialisation of kernel regression properties
         self.bw_estimation = bw_estimation
         self.n_support = n_support
@@ -249,6 +280,39 @@ class GeneralQSE(object):
             self.n_support = bw
 
         self.delay = (bw - 1) / 2
+
+    def initialize_bandwidth(self, signal):
+        """
+        This method calculates the initial bandwidth out of the data by a simple guess
+
+        Args:
+            signal (ndarray): data which used for kernel regression
+
+        Returns:
+            an initial bandwidth
+
+        """
+        stdev_data = np.std(signal)
+        mean_data = np.mean(signal)
+        # init_bw = 1.06 * stdev_data/mean_data * len(signal) ** (- 1. / (4 + self.order)) * len(signal)
+        # print('ini_bw', init_bw)
+        min_bw = 20
+        init_bw = max(len(signal) * 0.05, min_bw) * stdev_data/mean_data
+        print('initial bandwidth: ', init_bw)
+        self.set_bandwidth(init_bw)
+
+        return int(init_bw)
+
+    def initialize_states(self):
+        """
+        Initialize the primitive probability states of the Hidden Markov Chain
+
+        Returns:
+             list of initial probability of states
+        """
+        states = [1.0 for _ in self.primitives]
+
+        return np.array(states / np.sum(states))
 
     def get_projection_matrix(self):
         """
@@ -315,39 +379,6 @@ class GeneralQSE(object):
 
         return sigmas
 
-    def initialize_bandwidth(self, signal):
-        """
-        This method calculates the initial bandwidth out of the data by a simple guess
-
-        Args:
-            signal (ndarray): data which used for kernel regression
-
-        Returns:
-            an initial bandwidth
-
-        """
-        stdev_data = np.std(signal)
-        mean_data = np.mean(signal)
-        # init_bw = 1.06 * stdev_data/mean_data * len(signal) ** (- 1. / (4 + self.order)) * len(signal)
-        # print('ini_bw', init_bw)
-        min_bw = 20
-        init_bw = max(len(signal) * 0.05, min_bw) * stdev_data/mean_data
-        print('initial bandwidth: ', init_bw)
-        self.set_bandwidth(init_bw)
-
-        return int(init_bw)
-
-    def initialize_states(self):
-        """
-        Initialize the primitive probability states of the Hidden Markov Chain
-
-        Returns:
-             list of initial probability of states
-        """
-        states = [1.0 for _ in self.primitives]
-
-        return np.array(states / np.sum(states))
-
     def predict_features(self, signal, proj_matrix):
         """
         Make polynomial kernel regression by creating array of all moving windows, calculating projection matrix and
@@ -388,6 +419,15 @@ class GeneralQSE(object):
         features = proj_matrix.dot(y_stacks.T).T
 
         return features[:, 0:self.coeff_nr], y_stacks
+
+    def local_polynom_regression(self, signal, bw, min_stdev=precision):
+
+        self.set_bandwidth(bw)
+        proj_matrix = self.get_projection_matrix()
+        features, y_stacks = self.predict_features(signal, proj_matrix)
+        stdev = self.coefficient_uncertainty(proj_matrix, y_stacks, min_stdev)
+
+        return features, stdev
 
     def infer_probabilities(self, features, stdev):
         """ calculate probabilities of selected primitives out of polynom features and their standard deviation
@@ -475,35 +515,7 @@ class GeneralQSE(object):
 
         return np.max(gcv)  # np.mean(gcv_sc)
 
-    def sigma_eps_estimation(self, raw, filtered, show_results=False):
-        """ Extract the variance of the residual
-
-        Attributes:
-            raw (array): raw signal vector
-            filtered (array): filtered signal with polynomial kernel smoothing
-            show_results (bool): inidicates if plot of residuals should be plotted
-
-        Returns:
-            standard deviation of residuals
-
-        """
-        # raw = np.delete(raw, np.arange(self.n_support-1))
-        residuals = pd.Series(raw - filtered)  # .shift(-int(self.delay))
-        # print(np.cov((raw.values, filtered.values), rowvar=0))
-        if show_results is True:
-            plt.figure(3)
-            plt.subplot(3, 1, 1)
-            residuals.plot()
-            plt.subplot(3, 1, 2)
-            residuals.plot(kind='hist', bins=40)
-            plt.subplot(3, 1, 3)
-            raw.plot()
-            filtered.plot()
-            plt.show()
-
-        return residuals.std()
-
-    def rici_rule(self, bw_init, signal, tau=4.0, r_thres=0.5):
+    def ici_method(self, bw_init, signal, tau=4.0, r_thres=None):
         """
         Use RICI method for finding best bandwidths and smooth it to reduce jumps. Proposed in paper A Signal Denoising Method Based
         on the Improved ICI Rule by Jonatan Lerga, Miroslav Vrankic, and Victor Sucic (2008)
@@ -526,11 +538,7 @@ class GeneralQSE(object):
         stdev_est = stdev_estimation(signal)
         for j, h in enumerate(hs):
             print('calculate bandwidth... ', h)
-            self.set_bandwidth(h)
-            proj_matrix = self.get_projection_matrix()
-            features, y_stacks = self.predict_features(signal, proj_matrix)
-            stdev = self.coefficient_uncertainty(proj_matrix, y_stacks, min_stdev=stdev_est)
-            stdev_0 = stdev[:, 0]
+            features, stdev = self.local_polynom_regression(signal, h, min_stdev=stdev_est)
             feature_0 = features[:, 0]
             upper[:, j] = feature_0 + tau * stdev_est
             lower[:, j] = feature_0 - tau * stdev_est
@@ -540,17 +548,17 @@ class GeneralQSE(object):
         upper_min = np.minimum.accumulate(upper, axis=1)
         lower_max = np.maximum.accumulate(lower, axis=1)
 
-        # take max of upper minimum which is bigger than the lower_max
-        #mask = (upper_min > lower_max)
-        #subset_idx = np.argmax(upper_min[mask])
-        #parent_idx = np.arange(upper_min.shape[0])[mask][subset_idx]
-        rel_crit = (upper_min - lower_max) / (2 * tau * all_stdev[:, 0, :])
-        #  ad& (rel_crit >= r_thres)
-        criteria_mask = upper_min <= lower_max
+        # take max of upper minimum which is bigger than the lower_max, if r_threshold defined then add this criteria
+        if r_thres is not None:
+            rel_crit = (upper_min - lower_max) / (2 * tau * all_stdev[:, 0, :])
+            criteria_mask = (upper_min <= lower_max) & (rel_crit <= r_thres)
+        else:
+            criteria_mask = upper_min <= lower_max
+
         best_indexes = np.argmax(criteria_mask, axis=1)
 
         # if all false then argmax just gives first but should take last index
-        best_indexes = np.array([-1 if idx == 0 and criteria_mask[j, idx] else idx for j, idx in enumerate(best_indexes)])
+        best_indexes = np.array([-1 if idx == 0 and not criteria_mask[j, idx] else idx for j, idx in enumerate(best_indexes)])
 
         # smooth the signal to an good
         smoothed_ind = pd.Series(best_indexes).rolling(11, center=True).mean()
@@ -563,19 +571,7 @@ class GeneralQSE(object):
 
         best_bws = np.array([[hs[j] for j in best_indexes], [hs[i] for i in smoothed_ind]])
 
-        # nans = np.full(len(best_hs), np.nan)
-        # nans[0::50] = best_hs[0::50]
-        # ds = pd.Series(nans)
-
-        # plt.figure(4)
-        # plt.plot(best_hs)
-        # plt.plot(ds)
-        # plt.plot(smoothed_ind)
-        # plt.xlabel('Time []')
-        # plt.ylabel('Best Bandwidth')
-        # plt.show()
-
-        return sel_features, sel_stdev, best_bws.T  # rs.values.astype(int)
+        return sel_features, sel_stdev, best_bws.T
 
     def run(self, signal):
         """
@@ -594,7 +590,10 @@ class GeneralQSE(object):
         else:
             bw_init = self.n_support
 
-        if self.bw_estimation is True:
+        if self.bw_estimation == 'fix':
+            all_features, all_stdev = self.local_polynom_regression(signal, bw_init)
+
+        elif self.bw_estimation == 'gcv':
             # methods: TNC, SLSQP, Nelder-Mead, COBYLA, L-BFGS-B
             #cons = ({'type': 'eq', 'fun': lambda x: max(x-int(x))},)
             # minimum = minimize(self.pmse_gcv, bw_init, method='Nelder-Mead', args=(signal,))
@@ -618,11 +617,14 @@ class GeneralQSE(object):
             plt.ylabel('GCV-Score')
             plt.show()
 
-            self.set_bandwidth(hs[np.argmin(maxgcv)])
+            best_bw = hs[np.argmin(maxgcv)]
             print('best bandwidth found: ', self.n_support)
 
-        # featrues and stddev of variable bandwidth by applying the relative intersection of confidence intervals (RICI)
-        all_features, all_stdev, adaptive_bw = self.rici_rule(bw_init, signal, tau=4.0, r_thres=0.5)
+            all_features, all_stdev = self.local_polynom_regression(signal, best_bw)
+
+        elif self.bw_estimation == 'ici':
+            # featrues and stddev of variable bandwidth by applying the relative intersection of confidence intervals (RICI)
+            all_features, all_stdev, adaptive_bw = self.ici_method(bw_init, signal, tau=4.0, r_thres=0.5)
 
         # calculate the probabilieties out of features and stdev
         all_primitive_prob = self.infer_probabilities(all_features, all_stdev)
@@ -725,7 +727,7 @@ if __name__ == '__main__':
               ['U+', 'Q0', epsi], ['U+', 'L+', epsi], ['U+', 'U+', 0.50], ['U+', 'F+', 0.50],
               ['F+', 'Q0', epsi], ['F+', 'L+', 0.33], ['F+', 'U+', 0.33], ['F+', 'F+', 0.33]]
 
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans2, bw_estimation=False, n_support=200)
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans2, n_support=200, bw_estimation='ici')
 
     # B. Run algorithms
     t = time.process_time()
