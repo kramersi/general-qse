@@ -56,8 +56,12 @@ def rolling_window(a, window):
 def stdev_estimation(signal):
     """ estimates the standard deviation of a noisy signal, neglecting zero occurence. """
     diffs = np.absolute(np.diff(signal))
-    non_zero_diff = diffs[np.nonzero(diffs)]
-    return np.median(non_zero_diff) / 0.9539
+    non_zero_ind = np.nonzero(diffs)[0]
+    if non_zero_ind.size == 0:
+        return 0
+    else:
+        non_zero_diff = diffs[np.nonzero(diffs)]
+        return np.median(non_zero_diff) / 0.9539
 
 
 def sigma_eps_estimation(raw, filtered, show_results=False):
@@ -194,7 +198,9 @@ class GeneralQSE(object):
     all_primitives = {
         # list entries:  [sign of signal, sign of first_derivative, sign of second_derivative]
         # positive values
-        'F+': ['pos',     'zero',  'zero'],    # 'flat positive'
+        'M+': ['pos',     'zero',  'pos'],     # 'mountain positive'
+        'S+': ['pos',     'zero',  'zero'],    # 'saddle positive'
+        'V+': ['pos',     'zero',  'neg'],     # 'valley positive'
         'B+': ['pos',     'pos',   'pos'],     # 'boost positive'],
         'G+': ['pos',     'pos',   'zero'],    # 'equal growth positive'],
         'C+': ['pos',     'pos',   'neg'],     # 'concave deceleration positive'],
@@ -203,7 +209,9 @@ class GeneralQSE(object):
         'D+': ['pos',     'neg',   'neg'],     # 'deceleration positive'],
 
         # negative values
-        'F-': ['neg',     'zero',  'zero'],    # 'flat negative'],
+        'M-': ['neg',     'zero',  'pos'],     # 'mountain negative'],
+        'S-': ['neg',     'zero',  'zero'],    # 'saddle negative'],
+        'V-': ['neg',     'zero',  'neg'],     # 'valley negative'],
         'B-': ['neg',     'pos',   'pos'],     # 'boost negative'],
         'G-': ['neg',     'pos',   'zero'],    # 'equal growth negative'],
         'C-': ['neg',     'pos',   'neg'],     # 'concave deceleration negative'],
@@ -212,7 +220,9 @@ class GeneralQSE(object):
         'D-': ['neg',     'neg',   'neg'],     # 'deceleration negative'],
 
         # measured value ignored
-        'F':  ['ignore',  'zero',  'zero'],    # 'flat'],
+        'M':  ['ignore',  'zero',  'pos'],     # 'mountain'],
+        'S':  ['ignore',  'zero',  'zero'],    # 'saddle'],
+        'V':  ['ignore',  'zero',  'neg'],     # 'valley'],
         'B':  ['ignore',  'pos',   'pos'],     # 'boost'],
         'G':  ['ignore',  'pos',   'zero'],    # 'equal'],
         'C':  ['ignore',  'pos',   'neg'],     # 'concave deceleration'],
@@ -239,10 +249,13 @@ class GeneralQSE(object):
         # states where curvature (2nd derivative) is ignored
         'U+': ['pos',    'pos',    'ignore'],  # 'upper positive'],
         'L+': ['pos',    'neg',    'ignore'],  # 'lower positive'],
+        'F+': ['pos',    'zero',   'ignore'],  # 'flat positive'],
         'U-': ['neg',    'pos',    'ignore'],  # 'upper negative'],
         'L-': ['neg',    'neg',    'ignore'],  # 'lower negative'],
+        'F-': ['neg',    'zero',   'ignore'],  # 'flat negative'],
         'U':  ['ignore', 'pos',    'ignore'],  # 'upper'],
         'L':  ['ignore', 'neg',    'ignore'],  # 'lower']
+        'F':  ['ignore', 'zero',   'ignore'],  # 'flat']
     }
 
     # Precision of computer calculations, needed to prevent zero division
@@ -351,34 +364,6 @@ class GeneralQSE(object):
 
         return proj_matrix
 
-    def coefficient_uncertainty(self, proj_matrix, y_stacks, min_stdev=precision):
-        """
-        Get uncertainity of each polynom coefficient by taking diagonal entries of covariance matrix
-
-        Arguments:
-            y_stacks (float): variance of error of residuals (measurment error)
-            proj_matrix (ndarray): projection matrix
-            min_stdev (float): minimal standard deviation
-
-        Retruns:
-            standard deviation of each coefficient in every time step
-
-        """
-        sig_n = y_stacks.shape[0]
-        influence_matrix = (self.regr_basis.dot(proj_matrix))
-        sigmas = np.full((sig_n, self.coeff_nr), np.nan)
-
-        for i in range(sig_n):
-            residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
-            sigma_eps = max(np.std(residuals), min_stdev)
-            sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
-            stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
-            stdev_b = stdev_b[0:self.coeff_nr]
-
-            sigmas[i, :] = stdev_b
-
-        return sigmas
-
     def predict_features(self, signal, proj_matrix):
         """
         Make polynomial kernel regression by creating array of all moving windows, calculating projection matrix and
@@ -416,9 +401,38 @@ class GeneralQSE(object):
         y_stacks = rolling_window(extended_signal, self.n_support)
 
         # only if all values are not nan, but this is not the case because signal interpolated at beginning
-        features = proj_matrix.dot(y_stacks.T).T
+        # features = proj_matrix.dot(y_stacks.T).T
+        features = self.irls(y_stacks, 20)
 
         return features[:, 0:self.coeff_nr], y_stacks
+
+    def coefficient_uncertainty(self, proj_matrix, y_stacks, min_stdev=precision):
+        """
+        Get uncertainity of each polynom coefficient by taking diagonal entries of covariance matrix
+
+        Arguments:
+            y_stacks (float): variance of error of residuals (measurment error)
+            proj_matrix (ndarray): projection matrix
+            min_stdev (float): minimal standard deviation
+
+        Retruns:
+            standard deviation of each coefficient in every time step
+
+        """
+        sig_n = y_stacks.shape[0]
+        influence_matrix = (self.regr_basis.dot(proj_matrix))
+        sigmas = np.full((sig_n, self.coeff_nr), np.nan)
+
+        for i in range(sig_n):
+            residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
+            sigma_eps = max(np.std(residuals), min_stdev)
+            sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
+            stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
+            stdev_b = stdev_b[0:self.coeff_nr]
+
+            sigmas[i, :] = stdev_b
+
+        return sigmas
 
     def local_polynom_regression(self, signal, bw, min_stdev=precision):
 
@@ -440,8 +454,13 @@ class GeneralQSE(object):
         """
         b = features / stdev  # normalise features by their standard deviation, necessary to use norm.cdf
 
-        # get the max of each feature over time and take a procentage of it
-        deltas = np.nanmax(b, axis=0) * self.delta
+        # get the max of each feature over time and take a procentage of it, attention to second derivative.
+
+        deltas = np.nanmax(np.absolute(b), axis=0) * self.delta
+
+        # if deltas.size > 2:
+        #     deltas[-1] = deltas[-1]*2
+        #     deltas[-2] = deltas[-2]*2
 
         # Convert regression coefficients to probabilities for qualitative state
         prob_p = norm.logcdf(b - deltas)
@@ -479,6 +498,33 @@ class GeneralQSE(object):
             prob_n = states - np.max(states)  # introduce scaling with max value for normalisation afterwards
             states = np.exp(prob_n) / sum(np.exp(prob_n))
         return states
+
+    def irls(self, y_stacks, maxiter, d=0.000001, tolerance=0.001):
+        x = self.regr_basis
+        n = y_stacks.shape[0]
+        w = self.w
+        Bs = np.full((n, self.coeff_nr), np.nan)
+        for i in range(n):
+            w_err = np.ones(w.size)
+            proj_matrix = np.linalg.inv((x.T * w * w_err).dot(x)).dot(x.T) * (w * w_err)
+            # B = proj_matrix.dot(y_stacks.T).T  # B = np.dot(np.linalg.inv(X.T.dot(w_err).dot(X)), (X.T.dot(w_err).dot(y)))
+            ys = y_stacks.T[:, i]
+            eps = max(2.576 * stdev_estimation(ys), d)
+            B = proj_matrix.dot(ys)
+            for _ in range(maxiter):
+                _B = B
+                _w_err = np.absolute(ys - x.dot(B)).T  # should be replaced with the sigma calculation y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
+                w_err = np.where(_w_err < eps, _w_err/2 + d, eps**2/(2 * _w_err))
+                # w_err = float(1) / np.maximum(d, _w_err)  # should be replaced with that from paper
+                proj_matrix = np.linalg.inv((x.T * w * w_err).dot(x)).dot(x.T) * (w * w_err)
+                B = proj_matrix.dot(ys)
+                tol = sum(abs(B - _B))
+                if tol < tolerance:
+                    Bs[i, :] = B
+                    break
+            Bs[i, :] = B
+
+        return Bs
 
     def pmse_gcv(self, bw, signal):
         """
@@ -561,7 +607,7 @@ class GeneralQSE(object):
         best_indexes = np.array([-1 if idx == 0 and not criteria_mask[j, idx] else idx for j, idx in enumerate(best_indexes)])
 
         # smooth the signal to an good
-        smoothed_ind = pd.Series(best_indexes).rolling(11, center=True).mean()
+        smoothed_ind = pd.Series(best_indexes).rolling(11, center=False).mean()
         smoothed_ind = smoothed_ind.fillna(method='ffill')
         smoothed_ind = smoothed_ind.fillna(method='bfill').values.astype(int)
 
@@ -624,7 +670,7 @@ class GeneralQSE(object):
 
         elif self.bw_estimation == 'ici':
             # featrues and stddev of variable bandwidth by applying the relative intersection of confidence intervals (RICI)
-            all_features, all_stdev, adaptive_bw = self.ici_method(bw_init, signal, tau=4.0, r_thres=0.5)
+            all_features, all_stdev, best_bw = self.ici_method(bw_init, signal, tau=4.0, r_thres=0.1)
 
         # calculate the probabilieties out of features and stdev
         all_primitive_prob = self.infer_probabilities(all_features, all_stdev)
@@ -636,7 +682,10 @@ class GeneralQSE(object):
             states = self.estimate_states(prim_prob, states)
             all_states[i, :] = states
 
-        memory = np.hstack((all_features, all_stdev, np.exp(all_primitive_prob), all_states, adaptive_bw))
+        if self.bw_estimation == 'ici':
+            memory = np.hstack((all_features, all_stdev, np.exp(all_primitive_prob), all_states, best_bw))
+        else:
+            memory = np.hstack((all_features, all_stdev, np.exp(all_primitive_prob), all_states))
 
         return memory
 
@@ -692,8 +741,9 @@ class GeneralQSE(object):
 
         # plot feature derivatives and their confidence interval
         plt.figure(2)
+        p3 = plt.subplot(self.coeff_nr, 1, 1)
         for i in range(self.coeff_nr):
-            plt.subplot(self.coeff_nr, 1, i+1)
+            plt.subplot(self.coeff_nr, 1, i+1, sharex=p3)
             plt.plot(nr, memory[:, i], '-')
             plt.plot(nr, memory[:, i] + 2 * memory[:, self.coeff_nr+i], '--')
             plt.plot(nr, memory[:, i] - 2 * memory[:, self.coeff_nr+i], '--')
@@ -727,7 +777,7 @@ if __name__ == '__main__':
               ['U+', 'Q0', epsi], ['U+', 'L+', epsi], ['U+', 'U+', 0.50], ['U+', 'F+', 0.50],
               ['F+', 'Q0', epsi], ['F+', 'L+', 0.33], ['F+', 'U+', 0.33], ['F+', 'F+', 0.33]]
 
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans2, n_support=200, bw_estimation='ici')
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans1, n_support=400, bw_estimation='ici')
 
     # B. Run algorithms
     t = time.process_time()
