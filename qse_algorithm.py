@@ -58,7 +58,7 @@ def stdev_estimation(signal):
     diffs = np.absolute(np.diff(signal))
     non_zero_ind = np.nonzero(diffs)[0]
     if non_zero_ind.size == 0:
-        return 0
+        return 0.0
     else:
         non_zero_diff = diffs[np.nonzero(diffs)]
         return np.median(non_zero_diff) / 0.9539
@@ -364,7 +364,7 @@ class GeneralQSE(object):
 
         return proj_matrix
 
-    def predict_features(self, signal, proj_matrix):
+    def signal_stack(self, signal, method='nearest'):
         """
         Make polynomial kernel regression by creating array of all moving windows, calculating projection matrix and
         calculating.
@@ -372,7 +372,7 @@ class GeneralQSE(object):
         # and not half of delay later. It does so by taking the nearest value and multiplies it.
         Args:
             signal: signal to be smoothed
-            n_support: bandwidth of kernel_regression
+            method: how to extend the signal
 
         Return:
             features=polynom-coefficient
@@ -381,7 +381,7 @@ class GeneralQSE(object):
         # Extend signal at beginnig and end by the half of the moving window width, that filter exactly starts at first
         # entry and not a delay later. It does so by taking the nearest value and multiplies it.
         # If n_support is even number, add one value to back, that length correspond to each other.
-        method = 'nearest'
+
         if method == 'nearest':
             first = np.repeat(signal[0], self.delay)
             if self.n_support % 2 == 1:
@@ -400,11 +400,7 @@ class GeneralQSE(object):
         # n*m array of moving windows, n=signal_length, m=n_support
         y_stacks = rolling_window(extended_signal, self.n_support)
 
-        # only if all values are not nan, but this is not the case because signal interpolated at beginning
-        # features = proj_matrix.dot(y_stacks.T).T
-        features = self.irls(y_stacks, 20)
-
-        return features[:, 0:self.coeff_nr], y_stacks
+        return y_stacks
 
     def coefficient_uncertainty(self, proj_matrix, y_stacks, min_stdev=precision):
         """
@@ -437,9 +433,15 @@ class GeneralQSE(object):
     def local_polynom_regression(self, signal, bw, min_stdev=precision):
 
         self.set_bandwidth(bw)
-        proj_matrix = self.get_projection_matrix()
-        features, y_stacks = self.predict_features(signal, proj_matrix)
-        stdev = self.coefficient_uncertainty(proj_matrix, y_stacks, min_stdev)
+        y_stacks = self.signal_stack(signal)
+
+        _ = self.get_projection_matrix()
+
+        # only if all values are not nan, but this is not the case because signal interpolated at beginning
+        features, stdev = self.irls(y_stacks, 20, d=min_stdev)
+
+        #features = proj_matrix.dot(y_stacks.T).T
+        #stdev = self.coefficient_uncertainty(proj_matrix, y_stacks, min_stdev)
 
         return features, stdev
 
@@ -501,9 +503,10 @@ class GeneralQSE(object):
 
     def irls(self, y_stacks, maxiter, d=0.000001, tolerance=0.001):
         x = self.regr_basis
-        n = y_stacks.shape[0]
         w = self.w
+        n = y_stacks.shape[0]
         Bs = np.full((n, self.coeff_nr), np.nan)
+        sigmas = np.full((n, self.coeff_nr), np.nan)
         for i in range(n):
             w_err = np.ones(w.size)
             proj_matrix = np.linalg.inv((x.T * w * w_err).dot(x)).dot(x.T) * (w * w_err)
@@ -514,17 +517,27 @@ class GeneralQSE(object):
             for _ in range(maxiter):
                 _B = B
                 _w_err = np.absolute(ys - x.dot(B)).T  # should be replaced with the sigma calculation y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
-                w_err = np.where(_w_err < eps, _w_err/2 + d, eps**2/(2 * _w_err))
+                w_err = np.where(_w_err < eps, np.maximum(_w_err/2, d), eps**2/(2 * _w_err))
                 # w_err = float(1) / np.maximum(d, _w_err)  # should be replaced with that from paper
                 proj_matrix = np.linalg.inv((x.T * w * w_err).dot(x)).dot(x.T) * (w * w_err)
                 B = proj_matrix.dot(ys)
                 tol = sum(abs(B - _B))
                 if tol < tolerance:
                     Bs[i, :] = B
+                    sigma_eps = max(np.std(_w_err), d)
+                    sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
+                    stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
+                    stdev_b = stdev_b[0:self.coeff_nr]
+                    sigmas[i, :] = stdev_b
                     break
             Bs[i, :] = B
+            sigma_eps = max(np.std(_w_err), d)
+            sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
+            stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
+            stdev_b = stdev_b[0:self.coeff_nr]
+            sigmas[i, :] = stdev_b
 
-        return Bs
+        return Bs, sigmas
 
     def pmse_gcv(self, bw, signal):
         """
@@ -546,8 +559,8 @@ class GeneralQSE(object):
         # calculate projection matrix and update regr_basis and weights changed by new n_support
         proj_matrix = self.get_projection_matrix()
 
-        # make kernel regression by applying moving window of signal to projection matrix
-        all_features, y_stacks = self.predict_features(signal, proj_matrix)
+        # make rolling windows with bandwidht bw over whole signal
+        y_stacks = self.signal_stack(signal)
 
         # gcv without cross correlation
         sig_n = signal.size
