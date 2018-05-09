@@ -55,13 +55,18 @@ def rolling_window(a, window):
 
 def stdev_estimation(signal):
     """ estimates the standard deviation of a noisy signal, neglecting zero occurence. """
-    diffs = np.absolute(np.diff(signal))
-    non_zero_ind = np.nonzero(diffs)[0]
-    if non_zero_ind.size == 0:
-        return 0.0
-    else:
-        non_zero_diff = diffs[np.nonzero(diffs)]
-        return np.median(non_zero_diff) / 0.9539
+    ax = signal.ndim - 1
+    diffs = np.absolute(np.diff(signal, axis=ax))
+
+    if ax == 0:
+        non_zero_ind = np.nonzero(diffs)[0]
+        if non_zero_ind.size == 0:
+            return 0.0
+        else:
+            non_zero_diff = diffs[np.nonzero(diffs)]
+            return np.median(non_zero_diff, axis=ax) / 0.9539
+
+    return np.median(diffs, axis=ax) / 0.9539
 
 
 def sigma_eps_estimation(raw, filtered, show_results=False):
@@ -430,18 +435,19 @@ class GeneralQSE(object):
 
         return sigmas
 
-    def local_polynom_regression(self, signal, bw, min_stdev=precision):
+    def local_polynom_regression(self, signal, bw, min_stdev=precision, irls=False):
 
         self.set_bandwidth(bw)
         y_stacks = self.signal_stack(signal)
+        proj_matrix = self.get_projection_matrix()
 
-        _ = self.get_projection_matrix()
-
-        # only if all values are not nan, but this is not the case because signal interpolated at beginning
-        features, stdev = self.irls(y_stacks, 20, d=min_stdev)
-
-        #features = proj_matrix.dot(y_stacks.T).T
-        #stdev = self.coefficient_uncertainty(proj_matrix, y_stacks, min_stdev)
+        if irls:
+            # calculates more robust features because iterativly weighted decreased in case of outliers
+            features, stdev = self.irls(y_stacks, 20, d=min_stdev)
+        else:
+            # only if all values are not nan, but this is not the case because signal interpolated at beginning
+            features = proj_matrix.dot(y_stacks.T).T
+            stdev = self.coefficient_uncertainty(proj_matrix, y_stacks, min_stdev)
 
         return features, stdev
 
@@ -501,43 +507,81 @@ class GeneralQSE(object):
             states = np.exp(prob_n) / sum(np.exp(prob_n))
         return states
 
-    def irls(self, y_stacks, maxiter, d=0.000001, tolerance=0.001):
+    # not used because is very slow for bigger windows, therefore loop is better
+    def irls_tensor(self, y_stacks, maxiter, d=0.000001, tolerance=0.001):
         x = self.regr_basis
         w = self.w
         n = y_stacks.shape[0]
-        Bs = np.full((n, self.coeff_nr), np.nan)
+        w_tot = np.ones((n, w.size)) * w  # weights of kernel and of irls multiplied together
+        w_tot = w_tot[:, None]  # add a new dimension for automatic broadcasting
+        inner = np.linalg.inv(np.dot(x.T * w_tot, x))
+        proj_matrix = np.dot(inner, x.T) * w_tot
+        features = np.einsum('ijk,ik->ij', proj_matrix, y_stacks)
+
+        eps = np.maximum(2.576 * stdev_estimation(y_stacks), d)[:, None]
+
+        for _ in range(maxiter):  # while any(tol < tolerance):  #
+            _features = features
+            _w_err = np.absolute(y_stacks - x.dot(features.T).T)
+            w_err = np.where(_w_err < eps, np.maximum(_w_err / 2, d), eps ** 2 / (2 * _w_err))
+            w_tot = w_err * w
+            w_tot = w_tot[:, None]
+            inner = np.linalg.inv(np.dot(x.T * w_tot, x))
+            proj_matrix = np.dot(inner, x.T) * w_tot
+            features = np.einsum('ijk,ik->ij', proj_matrix, y_stacks)
+            tol = np.sum(np.absolute(features - _features), axis=1)
+            if all(tol < tolerance):
+                break
+
+        return features
+
+    def irls(self, y_stacks, maxiter, d=0.000001, tolerance=0.001):
+        """
+        Iteratively reweighted least square method to find features, which are robust to outliers.
+
+        Args:
+            y_stacks (ndarray): rolling window array of signal
+            maxiter (int): maximum of iterations
+            d (float): delta which indicates the minimum of error epsilon
+            tolerance: at which difference between old and new features the iteration should stop
+
+        Return:
+            features: polynom coefficients for every time step
+            sigmas: standard deviation of each feature at every time step
+
+        """
+        x = self.regr_basis
+        w = self.w
+        n = y_stacks.shape[0]
+        features = np.full((n, self.coeff_nr), np.nan)
         sigmas = np.full((n, self.coeff_nr), np.nan)
+
         for i in range(n):
             w_err = np.ones(w.size)
             proj_matrix = np.linalg.inv((x.T * w * w_err).dot(x)).dot(x.T) * (w * w_err)
-            # B = proj_matrix.dot(y_stacks.T).T  # B = np.dot(np.linalg.inv(X.T.dot(w_err).dot(X)), (X.T.dot(w_err).dot(y)))
             ys = y_stacks.T[:, i]
             eps = max(2.576 * stdev_estimation(ys), d)
-            B = proj_matrix.dot(ys)
-            for _ in range(maxiter):
-                _B = B
-                _w_err = np.absolute(ys - x.dot(B)).T  # should be replaced with the sigma calculation y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
-                w_err = np.where(_w_err < eps, np.maximum(_w_err/2, d), eps**2/(2 * _w_err))
-                # w_err = float(1) / np.maximum(d, _w_err)  # should be replaced with that from paper
+            feature = proj_matrix.dot(ys)
+            tol = 2 * tolerance # initialize tolerance that just higher
+            maxi = 0 # initialize maxiter
+
+            while (tol > tolerance) and (maxi < maxiter):
+                _feature = feature
+                _w_err = np.absolute(ys - x.dot(feature)).T  # should be replaced with the sigma calculation y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
+                w_err = np.where(_w_err < eps, np.maximum(_w_err/2, d), eps**2/(2 * _w_err))  # Huber criteria
                 proj_matrix = np.linalg.inv((x.T * w * w_err).dot(x)).dot(x.T) * (w * w_err)
-                B = proj_matrix.dot(ys)
-                tol = sum(abs(B - _B))
-                if tol < tolerance:
-                    Bs[i, :] = B
-                    sigma_eps = max(np.std(_w_err), d)
-                    sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
-                    stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
-                    stdev_b = stdev_b[0:self.coeff_nr]
-                    sigmas[i, :] = stdev_b
-                    break
-            Bs[i, :] = B
+                feature = proj_matrix.dot(ys)
+                tol = sum(abs(feature - _feature))
+                maxi += 1
+
+            features[i, :] = feature
             sigma_eps = max(np.std(_w_err), d)
             sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
             stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
             stdev_b = stdev_b[0:self.coeff_nr]
             sigmas[i, :] = stdev_b
 
-        return Bs, sigmas
+        return features, sigmas
 
     def pmse_gcv(self, bw, signal):
         """
@@ -574,20 +618,27 @@ class GeneralQSE(object):
 
         return np.max(gcv)  # np.mean(gcv_sc)
 
-    def ici_method(self, bw_init, signal, tau=4.0, r_thres=None):
+    def ici_method(self, bw_init, signal, tau=4.0, r_thres=None, irls=True):
         """
         Use RICI method for finding best bandwidths and smooth it to reduce jumps. Proposed in paper A Signal Denoising Method Based
         on the Improved ICI Rule by Jonatan Lerga, Miroslav Vrankic, and Victor Sucic (2008)
 
-        bw_init: initial bandwidht
-        signal: 1-D array of noisy signal values
-        tau: confidence-band width
-        r_thres: threshold of relative bandwidth
-        :return:
+        Args:
+            bw_init: initial bandwidht
+            signal: 1-D array of noisy signal values
+            tau: confidence-band width
+            r_thres: threshold of relative bandwidth
+            irls (bool): indicates
+
+        Returns:
+            sel_features (ndarray): features from best bandwidth
+            sel_stdev (ndarray): standard deviation of features of best bandwidth
+            best_bws (ndarray): best bandwidths (smoothed and unsmoothed)ad
         """
         hs = np.linspace(bw_init/10, bw_init*2, dtype='int16')
         nh = len(hs)
         nx = len(signal)
+        window_length = 11
 
         upper = np.full((nx, nh), np.nan)
         lower = np.full((nx, nh), np.nan)
@@ -597,7 +648,7 @@ class GeneralQSE(object):
         stdev_est = stdev_estimation(signal)
         for j, h in enumerate(hs):
             print('calculate bandwidth... ', h)
-            features, stdev = self.local_polynom_regression(signal, h, min_stdev=stdev_est)
+            features, stdev = self.local_polynom_regression(signal, h, min_stdev=stdev_est, irls=irls)
             feature_0 = features[:, 0]
             upper[:, j] = feature_0 + tau * stdev_est
             lower[:, j] = feature_0 - tau * stdev_est
@@ -614,21 +665,22 @@ class GeneralQSE(object):
         else:
             criteria_mask = upper_min <= lower_max
 
-        best_indexes = np.argmax(criteria_mask, axis=1)
+        best_idx = np.argmax(criteria_mask, axis=1)
 
-        # if all false then argmax just gives first but should take last index
-        best_indexes = np.array([-1 if idx == 0 and not criteria_mask[j, idx] else idx for j, idx in enumerate(best_indexes)])
+        # if all false then argmax gives first index but should take last index
+        best_idx = np.array([nh - 1 if idx == 0 and not criteria_mask[j, idx] else idx for j, idx in enumerate(best_idx)])
 
-        # smooth the signal to an good
-        smoothed_ind = pd.Series(best_indexes).rolling(11, center=False).mean()
-        smoothed_ind = smoothed_ind.fillna(method='ffill')
-        smoothed_ind = smoothed_ind.fillna(method='bfill').values.astype(int)
+        # smooth the choosen bandwidth index to avoid unecessary jumps
+        smoothed_idx = pd.Series(best_idx).rolling(window_length, center=True).mean()
+        smoothed_idx = smoothed_idx.fillna(method='ffill')
+        smoothed_idx = smoothed_idx.fillna(method='bfill').values.astype(int)
 
+        # select the features and standard deviation of the chosen bandwidth
         nx_arange = np.arange(nx)
-        sel_stdev = all_stdev[nx_arange, :, best_indexes]
-        sel_features = all_features[nx_arange, :, best_indexes]
+        sel_stdev = all_stdev[nx_arange, :, smoothed_idx]
+        sel_features = all_features[nx_arange, :, smoothed_idx]
 
-        best_bws = np.array([[hs[j] for j in best_indexes], [hs[i] for i in smoothed_ind]])
+        best_bws = np.array([[hs[j] for j in best_idx], [hs[i] for i in smoothed_idx]])
 
         return sel_features, sel_stdev, best_bws.T
 
@@ -683,7 +735,7 @@ class GeneralQSE(object):
 
         elif self.bw_estimation == 'ici':
             # featrues and stddev of variable bandwidth by applying the relative intersection of confidence intervals (RICI)
-            all_features, all_stdev, best_bw = self.ici_method(bw_init, signal, tau=4.0, r_thres=0.1)
+            all_features, all_stdev, best_bw = self.ici_method(bw_init, signal, tau=4.4, r_thres=0.85)
 
         # calculate the probabilieties out of features and stdev
         all_primitive_prob = self.infer_probabilities(all_features, all_stdev)
@@ -768,14 +820,14 @@ class GeneralQSE(object):
 
 
 if __name__ == '__main__':
-    file = 'cam1_intra_0_0.2_0.4__ly4ftr16w2__cam1_0_0.2_0.4.csv'
+    file = 'cam1_intra_0_0.2_0.4__ly4ftr16w2__cam1_0_0.2_0.4sensor_value.csv'
 
     # Part I. load data from csv
     df = pd.read_csv('data/'+file, sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
 
-    y = df['flood_index'].values
-    #y = df['sensor_value'].values
+    #y = df['flood_index'].values
+    y = df['sensor_value'].values
 
     # Part II. Algorithm setup and run
     # A. Setup and Initialization with tunning parameters
@@ -790,7 +842,7 @@ if __name__ == '__main__':
               ['U+', 'Q0', epsi], ['U+', 'L+', epsi], ['U+', 'U+', 0.50], ['U+', 'F+', 0.50],
               ['F+', 'Q0', epsi], ['F+', 'L+', 0.33], ['F+', 'U+', 0.33], ['F+', 'F+', 0.33]]
 
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans1, n_support=400, bw_estimation='ici')
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.02, transitions=trans1, n_support=400, bw_estimation='ici')
 
     # B. Run algorithms
     t = time.process_time()

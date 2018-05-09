@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pylab as plt
+from scipy.stats import spearmanr
 
 
 def square_diff(x1, x2, plot=False):
@@ -32,3 +33,13 @@ def cosine_diff(x1, x2, plot=False):
     print('avg cosine diff: ', np.mean(1-s))
 
     return np.sum(1 - s)
+
+
+def spearman_diff(x1, x2, plot=False):
+    s_corr = spearmanr(x1, x2, axis=0)[0]
+    s_tot = np.mean(s_corr)
+
+    print('avg spearman diff: ', 1 - s_tot)
+
+    return 1 - s_tot
+
