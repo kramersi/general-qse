@@ -635,7 +635,7 @@ class GeneralQSE(object):
             sel_stdev (ndarray): standard deviation of features of best bandwidth
             best_bws (ndarray): best bandwidths (smoothed and unsmoothed)ad
         """
-        hs = np.linspace(bw_init/10, bw_init*2, dtype='int16')
+        hs = np.linspace(bw_init/10, bw_init*2, num=30, dtype='int16')
         nh = len(hs)
         nx = len(signal)
         window_length = 11
@@ -754,18 +754,21 @@ class GeneralQSE(object):
 
         return memory
 
-    def plot(self, signal, memory):
+    def plot(self, signal, memory, path=None):
         """
         Plot the signal and the smoothed signal, the primitive probabilities and the primitive states.
 
         Args:
             memory (ndarray): values of the result of the QSE (nr, signal, features, primitive prob., primitive states)
             signal (ndarray): raw signal
+            path (str): path were figures should be saved, if None then not saved but just showed
+
         """
         offset = 2 * self.coeff_nr
         state_range = np.arange(offset + self.prim_nr, offset + 2 * self.prim_nr)
         prim_range = np.arange(offset, offset + self.prim_nr)
         nr = np.arange(memory.shape[0])
+
         plt.figure(1)
 
         # plot signal and filtered signal
@@ -778,6 +781,7 @@ class GeneralQSE(object):
         plt.ylabel('Signal value [-]')
         plt.legend(('raw signal', 'filtered signal'))
 
+        # plot bandwidths
         plt.subplot(4, 1, 2, sharex=p2)
         plt.plot(nr, memory[:, -2])
         plt.plot(nr, memory[:, -1])
@@ -792,7 +796,7 @@ class GeneralQSE(object):
         for i, r in enumerate(prim_range):
             plt.plot(nr, memory[:, r], '-', color=colors[i])
         plt.xlabel('Sample index [-]')
-        plt.ylabel('Primitive probabilities [-]')
+        plt.ylabel('Primitive prob. [-]')
         plt.legend(tuple(self.primitives))
 
         # plot states probabilities
@@ -801,8 +805,11 @@ class GeneralQSE(object):
         for i, r in enumerate(state_range):
             plt.plot(nr, memory[:, r], '-', color=colors[i])
         plt.xlabel('Sample index [-]')
-        plt.ylabel('HMM state probabilities [-]')
+        plt.ylabel('State prob. [-]')
         plt.legend(tuple(self.primitives))
+
+        if path is not None:
+            plt.savefig(path + '_states.pdf', format='pdf', orientation='landscape')
 
         # plot feature derivatives and their confidence interval
         plt.figure(2)
@@ -816,7 +823,10 @@ class GeneralQSE(object):
             plt.xlabel('Sample index [-]')
             plt.ylabel('derivative: ' + str(i))
 
-        plt.show(block=True)
+        if path is not None:
+            plt.savefig(path + '_derivatives.pdf', format='pdf', orientation='landscape')
+        else:
+            plt.show(block=True)
 
 
 if __name__ == '__main__':
@@ -842,7 +852,7 @@ if __name__ == '__main__':
               ['U+', 'Q0', epsi], ['U+', 'L+', epsi], ['U+', 'U+', 0.50], ['U+', 'F+', 0.50],
               ['F+', 'Q0', epsi], ['F+', 'L+', 0.33], ['F+', 'U+', 0.33], ['F+', 'F+', 0.33]]
 
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.02, transitions=trans1, n_support=400, bw_estimation='ici')
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.03, transitions=trans1, n_support=400, bw_estimation='ici')
 
     # B. Run algorithms
     t = time.process_time()
