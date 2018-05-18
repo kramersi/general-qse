@@ -670,7 +670,7 @@ class GeneralQSE(object):
         # if all false then argmax gives first index but should take last index
         best_idx = np.array([nh - 1 if idx == 0 and not criteria_mask[j, idx] else idx for j, idx in enumerate(best_idx)])
 
-        # smooth the choosen bandwidth index to avoid unecessary jumps
+        # smooth the choosen bandwidth index to avoid unnecessary jumps
         smoothed_idx = pd.Series(best_idx).rolling(window_length, center=True).mean()
         smoothed_idx = smoothed_idx.fillna(method='ffill')
         smoothed_idx = smoothed_idx.fillna(method='bfill').values.astype(int)
@@ -748,13 +748,13 @@ class GeneralQSE(object):
             all_states[i, :] = states
 
         if self.bw_estimation == 'ici':
-            memory = np.hstack((all_features, all_stdev, np.exp(all_primitive_prob), all_states, best_bw))
+            memory = np.hstack((signal[:, None], all_features, all_stdev, np.exp(all_primitive_prob), all_states, best_bw))
         else:
-            memory = np.hstack((all_features, all_stdev, np.exp(all_primitive_prob), all_states))
+            memory = np.hstack((signal[:, None], all_features, all_stdev, np.exp(all_primitive_prob), all_states))
 
         return memory
 
-    def plot(self, signal, memory, path=None):
+    def plot(self, memory, path=None):
         """
         Plot the signal and the smoothed signal, the primitive probabilities and the primitive states.
 
@@ -764,7 +764,7 @@ class GeneralQSE(object):
             path (str): path were figures should be saved, if None then not saved but just showed
 
         """
-        offset = 2 * self.coeff_nr
+        offset = 2 * self.coeff_nr + 1
         state_range = np.arange(offset + self.prim_nr, offset + 2 * self.prim_nr)
         prim_range = np.arange(offset, offset + self.prim_nr)
         nr = np.arange(memory.shape[0])
@@ -774,19 +774,17 @@ class GeneralQSE(object):
         # plot signal and filtered signal
         p2 = plt.subplot(4, 1, 1)
         # plt.plot(nr, signal[self.n_support-2:-1], 'k-')
-        plt.plot(nr, signal, 'k-')
+        plt.plot(nr, memory[:, 0], 'k-')
         # plt.plot(nr - self.delay, memory[:, 0], 'b-')
-        plt.plot(nr, memory[:, 0], 'b-')
-        plt.xlabel('Sample index [-]')
+        plt.plot(nr, memory[:, 1], 'b-')
         plt.ylabel('Signal value [-]')
-        plt.legend(('raw signal', 'filtered signal'))
+        plt.legend(('raw signal', 'smoothed signal'))
 
         # plot bandwidths
         plt.subplot(4, 1, 2, sharex=p2)
         plt.plot(nr, memory[:, -2])
         plt.plot(nr, memory[:, -1])
-        plt.xlabel('Sample index [-]')
-        plt.xlabel('Bandwidth [-]')
+        plt.ylabel('Bandwidth [-]')
         plt.legend(('raw', 'smoothed'))
 
         # plot primitive probabilities
@@ -795,8 +793,7 @@ class GeneralQSE(object):
         # plt.plot(nr - self.delay, memory[:, prim_range], '-')
         for i, r in enumerate(prim_range):
             plt.plot(nr, memory[:, r], '-', color=colors[i])
-        plt.xlabel('Sample index [-]')
-        plt.ylabel('Primitive prob. [-]')
+        plt.ylabel('P(Primitive) [-]')
         plt.legend(tuple(self.primitives))
 
         # plot states probabilities
@@ -805,21 +802,21 @@ class GeneralQSE(object):
         for i, r in enumerate(state_range):
             plt.plot(nr, memory[:, r], '-', color=colors[i])
         plt.xlabel('Sample index [-]')
-        plt.ylabel('State prob. [-]')
+        plt.ylabel('P(State) [-]')
         plt.legend(tuple(self.primitives))
 
         if path is not None:
             plt.savefig(path + '_states.pdf', format='pdf', orientation='landscape')
+            plt.close(1)
 
         # plot feature derivatives and their confidence interval
         plt.figure(2)
         p3 = plt.subplot(self.coeff_nr, 1, 1)
         for i in range(self.coeff_nr):
             plt.subplot(self.coeff_nr, 1, i+1, sharex=p3)
-            plt.plot(nr, memory[:, i], '-')
-            plt.plot(nr, memory[:, i] + 2 * memory[:, self.coeff_nr+i], '--')
-            plt.plot(nr, memory[:, i] - 2 * memory[:, self.coeff_nr+i], '--')
-
+            plt.plot(nr, memory[:, i + 1], '-')
+            plt.plot(nr, memory[:, i + 1] + 2 * memory[:, self.coeff_nr+i+1], '--')
+            plt.plot(nr, memory[:, i + 1] - 2 * memory[:, self.coeff_nr+i+1], '--')
             plt.xlabel('Sample index [-]')
             plt.ylabel('derivative: ' + str(i))
 
@@ -830,29 +827,29 @@ class GeneralQSE(object):
 
 
 if __name__ == '__main__':
-    file = 'cam1_intra_0_0.2_0.4__ly4ftr16w2__cam1_0_0.2_0.4sensor_value.csv'
+    file = 'data/cam1cam5_intra_0_0.2_0.4__ly4ftr16w2__cam1_161007_0_0.2_0.4.csv'
 
     # Part I. load data from csv
-    df = pd.read_csv('data/'+file, sep=',', dtype={'sensor_value': np.float64})
+    df = pd.read_csv(file, sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
 
-    #y = df['flood_index'].values
-    y = df['sensor_value'].values
+    y = df['flood_index'].values
+    #y = df['sensor_value'].values
 
     # Part II. Algorithm setup and run
     # A. Setup and Initialization with tunning parameters
     epsi = 0.000001
-    trans1 = [['Q0', 'Q0', 0.50], ['Q0', 'L+', epsi], ['Q0', 'U+', 0.50], ['Q0', 'F+', epsi],
-              ['L+', 'Q0', 0.25], ['L+', 'L+', 0.25], ['L+', 'U+', 0.25], ['L+', 'F+', 0.25],
-              ['U+', 'Q0', epsi], ['U+', 'L+', 0.33], ['U+', 'U+', 0.33], ['U+', 'F+', 0.33],
-              ['F+', 'Q0', epsi], ['F+', 'L+', 0.33], ['F+', 'U+', 0.33], ['F+', 'F+', 0.33]]
 
-    trans2 = [['Q0', 'Q0', 0.50], ['Q0', 'L+', epsi], ['Q0', 'U+', 0.50], ['Q0', 'F+', epsi],
-              ['L+', 'Q0', 0.33], ['L+', 'L+', 0.33], ['L+', 'U+', epsi], ['L+', 'F+', 0.33],
-              ['U+', 'Q0', epsi], ['U+', 'L+', epsi], ['U+', 'U+', 0.50], ['U+', 'F+', 0.50],
-              ['F+', 'Q0', epsi], ['F+', 'L+', 0.33], ['F+', 'U+', 0.33], ['F+', 'F+', 0.33]]
+    trans = [['Q0', 'Q0', 0.50], ['Q0', 'L', epsi], ['Q0', 'U', 0.50], ['Q0', 'F+', epsi],
+             ['L',  'Q0', 0.33], ['L',  'L', 0.33], ['L',  'U', epsi], ['L',  'F+', 0.33],
+             ['U',  'Q0', epsi], ['U',  'L', epsi], ['U',  'U', 0.50], ['U',  'F+', 0.50],
+             ['F+', 'Q0', epsi], ['F+', 'L', 0.33], ['F+', 'U', 0.33], ['F+', 'F+', 0.33]]
 
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.03, transitions=trans1, n_support=400, bw_estimation='ici')
+    bw_fix = dict(type='fix', n_support=20)
+    bw_ici = dict(type='ici', min_support=20, max_support=600, ici_span=4.4, rel_thres=0.85)
+    bw_gcv = dict(type='gcv', min_support=20, max_support=600)
+
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans, n_support=200, bw_estimation='ici')
 
     # B. Run algorithms
     t = time.process_time()
@@ -862,4 +859,4 @@ if __name__ == '__main__':
     print('finish')
 
     # Part III: Display
-    qse.plot(y, result)
+    qse.plot(result)
