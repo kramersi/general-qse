@@ -215,6 +215,17 @@ class GeneralQSE(object):
                     iteratively reweighted least square method (IRLS).
 
     """
+
+    # define constants for certain calculations
+    precision = float(1e-12)  # Precision of computer calculations, needed to prevent zero division
+    irls_maxiter = 20  # maximal iteration for iteratively reweighted least square method
+    irls_tol = 0.001  # tolerance for least square to stop iteration
+    n_bandwidth = 30  # number of bandwidths between minimal and maximal n_support
+    ici_window = 11  # window size for moving average of estimated bandwidths with ICI
+    extend_method = 'nearest'  # defines how signal should be extended 'nearest' or 'same'
+    plot_path = None  # if path is a string then resulting plots are stored as pdf in this path
+    # verbose = True  # defines if text should be shown
+
     # define all the transitions each sublist has start primitive, end primitive and transition probability in it.
     allowed_trans = [['Q', 'U+', 0.5], ['U+', 'L+', 1], ['L+', 'U+', 0.5], ['L+', 'Q0+', 1]]
 
@@ -281,9 +292,6 @@ class GeneralQSE(object):
         'L':  ['ignore', 'neg',    'ignore'],  # 'lower']
         'F':  ['ignore', 'zero',   'ignore'],  # 'flat']
     }
-
-    # Precision of computer calculations, needed to prevent zero division
-    precision = float(1e-16)
 
     bw_option = dict(n_support=None, min_support=10, max_support=100, ici_span=4.4, rel_threshold=0.85, m_estimator=True)
 
@@ -393,7 +401,7 @@ class GeneralQSE(object):
 
         return proj_matrix
 
-    def signal_stack(self, signal, method='nearest'):
+    def signal_stack(self, signal):
         """
         Make polynomial kernel regression by creating array of all moving windows, calculating projection matrix and
         calculating.
@@ -411,13 +419,13 @@ class GeneralQSE(object):
         # entry and not a delay later. It does so by taking the nearest value and multiplies it.
         # If n_support is even number, add one value to back, that length correspond to each other.
 
-        if method == 'nearest':
+        if self.extend_method == 'nearest':
             first = np.repeat(signal[0], self.delay)
             if self.n_support % 2 == 1:
                 last = np.repeat(signal[-1], self.delay)
             else:
                 last = np.repeat(signal[-1], self.delay+1)
-        elif method == 'same':
+        elif self.extend_method == 'same':
             first = signal[0:int(self.delay)]
             if self.n_support % 2 == 1:
                 last = signal[-int(self.delay):-1]
@@ -467,7 +475,7 @@ class GeneralQSE(object):
 
         if self.bw_estimation != 'fix' and self.bw_options['irls']:
             # calculates more robust features because iterativly weighted decreased in case of outliers
-            features, stdev = self.irls(y_stacks, 20, d=min_stdev)
+            features, stdev = self.irls(y_stacks, d=min_stdev)
         else:
             # only if all values are not nan, but this is not the case because signal interpolated at beginning
             features = proj_matrix.dot(y_stacks.T).T
@@ -532,7 +540,7 @@ class GeneralQSE(object):
         return states
 
     # not used because is very slow for bigger windows, therefore loop is better
-    def irls_tensor(self, y_stacks, maxiter, d=0.000001, tolerance=0.001):
+    def irls_tensor(self, y_stacks, d=precision):
         x = self.regr_basis
         w = self.w
         n = y_stacks.shape[0]
@@ -544,7 +552,7 @@ class GeneralQSE(object):
 
         eps = np.maximum(2.576 * stdev_estimation(y_stacks), d)[:, None]
 
-        for _ in range(maxiter):  # while any(tol < tolerance):  #
+        for _ in range(self.irls_maxiter):  # while any(tol < tolerance):  #
             _features = features
             _w_err = np.absolute(y_stacks - x.dot(features.T).T)
             w_err = np.where(_w_err < eps, np.maximum(_w_err / 2, d), eps ** 2 / (2 * _w_err))
@@ -554,12 +562,12 @@ class GeneralQSE(object):
             proj_matrix = np.dot(inner, x.T) * w_tot
             features = np.einsum('ijk,ik->ij', proj_matrix, y_stacks)
             tol = np.sum(np.absolute(features - _features), axis=1)
-            if all(tol < tolerance):
+            if all(tol < self.irls_tol):
                 break
 
         return features
 
-    def irls(self, y_stacks, maxiter, d=0.000001, tolerance=0.001):
+    def irls(self, y_stacks, d=precision):
         """
         Iteratively reweighted least square method to find features, which are robust to outliers.
 
@@ -586,10 +594,10 @@ class GeneralQSE(object):
             ys = y_stacks.T[:, i]
             eps = max(2.576 * stdev_estimation(ys), d)
             feature = proj_matrix.dot(ys)
-            tol = 2 * tolerance # initialize tolerance that just higher
+            tol = 2 * self.irls_tol # initialize tolerance that just higher
             maxi = 0  # initialize maxiter
 
-            while (tol > tolerance) and (maxi < maxiter):
+            while (tol > self.irls_tol) and (maxi < self.irls_maxiter):
                 _feature = feature
                 _w_err = np.absolute(ys - x.dot(feature)).T  # should be replaced with the sigma calculation y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
                 w_err = np.where(_w_err < eps, np.maximum(_w_err/2, d), eps**2/(2 * _w_err))  # Huber criteria
@@ -661,9 +669,8 @@ class GeneralQSE(object):
 
         """
         # define important variables
-        nh = 30
+        nh = self.n_bandwidth
         nx = len(signal)
-        window_length = 11
         dim = (nx, self.coeff_nr, nh)
         stdev_est = stdev_estimation(signal)
         ici_span = self.bw_options['ici_span']
@@ -704,7 +711,7 @@ class GeneralQSE(object):
         best_idx = np.array([nh - 1 if idx == 0 and not criteria_mask[j, idx] else idx for j, idx in enumerate(best_idx)])
 
         # smooth the choosen bandwidth index to avoid unnecessary jumps
-        smoothed_idx = pd.Series(best_idx).rolling(window_length, center=True).mean()
+        smoothed_idx = pd.Series(best_idx).rolling(self.ici_window, center=True).mean()
         smoothed_idx = smoothed_idx.fillna(method='ffill')
         smoothed_idx = smoothed_idx.fillna(method='bfill').values.astype(int)
 
@@ -746,7 +753,9 @@ class GeneralQSE(object):
             # minimum = minimize(self.pmse_gcv, bw_init, method='L-BFGS-B', args=(signal,), bounds=((3, None),))
             # minimum = fmin(self.pmse_gcv, bw_init, args=(signal, ), xtol=1)
             # print(minimum)
-            hs = np.linspace(self.bw_options['min_support'], self.bw_options['max_support'], dtype='int16')
+            hs = np.linspace(self.bw_options['min_support'], self.bw_options['max_support'], num=self.n_bandwidth,
+                             dtype='int16')
+
             maxgcv = np.full(len(hs), np.nan)
 
             for j, n in enumerate(hs):
@@ -787,7 +796,7 @@ class GeneralQSE(object):
 
         return memory
 
-    def plot(self, memory, path=None):
+    def plot(self, memory):
         """
         Plot the signal and the smoothed signal, the primitive probabilities and the primitive states.
 
@@ -838,8 +847,8 @@ class GeneralQSE(object):
         plt.ylabel('P(State) [-]')
         plt.legend(tuple(self.primitives))
 
-        if path is not None:
-            plt.savefig(path + '_states.pdf', format='pdf', orientation='landscape')
+        if self.plot_path is not None:
+            plt.savefig(self.plot_path + '_states.pdf', format='pdf', orientation='landscape')
             plt.close(1)
 
         # plot feature derivatives and their confidence interval
@@ -853,8 +862,8 @@ class GeneralQSE(object):
             plt.xlabel('Sample index [-]')
             plt.ylabel('derivative: ' + str(i))
 
-        if path is not None:
-            plt.savefig(path + '_derivatives.pdf', format='pdf', orientation='landscape')
+        if self.plot_path is not None:
+            plt.savefig(self.plot_path + '_derivatives.pdf', format='pdf', orientation='landscape')
         else:
             plt.show(block=True)
 
@@ -866,8 +875,8 @@ if __name__ == '__main__':
     # load data from csv
     df = pd.read_csv(file, sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
-    y = df['flood_index'].values
-    #y = df['sensor_value'].values
+    #y = df['flood_index'].values
+    y = df['sensor_value'].values
 
     # setup and initialization with tunning parameters
     epsi = 0.000001
@@ -876,7 +885,7 @@ if __name__ == '__main__':
              ['U',  'Q0', epsi], ['U',  'L', epsi], ['U',  'U', 0.50], ['U',  'F+', 0.50],
              ['F+', 'Q0', epsi], ['F+', 'L', 0.33], ['F+', 'U', 0.33], ['F+', 'F+', 0.33]]
 
-    bw_opt = dict(n_support=100, min_support=10, max_support=400, ici_span=3.4, rel_threshold=0.85, irls=False)
+    bw_opt = dict(n_support=100, min_support=40, max_support=400, ici_span=3.4, rel_threshold=0.85, irls=False)
     qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans, bw_estimation='ici', bw_options=bw_opt)
 
     # run algorithms
