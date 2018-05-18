@@ -42,8 +42,9 @@ import time
 __all__ = ['order_validation', 'kernel_validation', 'non_negative_validation', 'extract_primitives',
            'generate_trans_matrix', 'GeneralQSE']
 
-# ToDo: indicate that now not online but offline
-# ToDo: make code also workable for Batch processing
+# ToDo: indicate that now not online but offline, make code also workable for Batch processing
+# ToDo: always show bandwidths in plot, not just if ici is chosen.
+# ToDo: possibility for verbose and storing or just showing
 
 
 def rolling_window(a, window):
@@ -191,9 +192,27 @@ class GeneralQSE(object):
         delta (float): bandwidth parameter for the probability of zero-valued derivative. It indicates at which
             Percent of the maximum signal value, 1st and 2nd derivative the Probability to be in zero state is 68%.
             better name could be zero_threshold
-        n_support (int): initial length of support window (often called bandwidth in kernel regression)
-        bw_estimation (string): one of 'fix', 'gcv', 'ici', indicates if bandwidth should be fix, estimated with cross
-        validation or adaptive with ici method.
+        bw_estimation (str): defines how the bandwidth should be estimated
+        bw_options (dict): a dict which specifies further options for the defined bandwidth estimation method.
+            Following options are valid for the presented type:
+
+            fix (user defined fixed bandwidth):
+                n_support (int): initial length of support window (often called bandwidth in kernel regression). If its
+                None than it is estimated with a simple rule of thumb.
+
+            gcv (fixed bandwidth optimized with generalized cross validation):
+                min_support (int): minimal support, which will be evaluated.
+                max_support (int): maximal support, which will be evaluated.
+
+            ici (adaptive bandwidth calculated over intersection of confidence intervals):
+                min_support (int): minimal support, which will be evaluated.
+                max_support (int): maximal support, which will be evaluated.
+                ici_span (float): inidcates the width of the confidence intervall, the higher the bigger the estimated
+                    bandwidth, values between 2-5 are recommended.
+                rel_threshold (float): inidicates the relative threshold for the additional criteria in the ICI method,
+                    values between 0.5 and 0.85 are recommended.
+                irls (bool): boolean which indicates, if outliers should be given less weight in the regression by using
+                    iteratively reweighted least square method (IRLS).
 
     """
     # define all the transitions each sublist has start primitive, end primitive and transition probability in it.
@@ -266,17 +285,22 @@ class GeneralQSE(object):
     # Precision of computer calculations, needed to prevent zero division
     precision = float(1e-16)
 
-    def __init__(self, kernel='tricube', order=3, delta=0.05, transitions=allowed_trans, n_support=None, bw_estimation='fix'):
+    bw_option = dict(n_support=None, min_support=10, max_support=100, ici_span=4.4, rel_threshold=0.85, m_estimator=True)
+
+    def __init__(self, kernel='tricube', order=3, delta=0.05, transitions=allowed_trans, bw_estimation='fix',
+                 bw_options=bw_option):
+
         # initialisation of kernel regression properties
         self.bw_estimation = bw_estimation
-        self.n_support = n_support
+        self.bw_options = bw_options
+        self.n_support = bw_options['n_support']
         self.sigma_eps = 1
         self.order = order_validation(order)
         self.kernel = kernel_validation(kernel)
         self.delta = non_negative_validation(delta)
         self.coeff_nr = min(order, 3)
-        if n_support is not None:
-            self.delay = (n_support - 1)/2
+        if self.n_support is not None:
+            self.delay = (self.n_support - 1)/2
         else:
             self.delay = None
 
@@ -435,13 +459,13 @@ class GeneralQSE(object):
 
         return sigmas
 
-    def local_polynom_regression(self, signal, bw, min_stdev=precision, irls=False):
+    def local_polynom_regression(self, signal, bw, min_stdev=precision):
 
         self.set_bandwidth(bw)
         y_stacks = self.signal_stack(signal)
         proj_matrix = self.get_projection_matrix()
 
-        if irls:
+        if self.bw_estimation != 'fix' and self.bw_options['irls']:
             # calculates more robust features because iterativly weighted decreased in case of outliers
             features, stdev = self.irls(y_stacks, 20, d=min_stdev)
         else:
@@ -480,7 +504,7 @@ class GeneralQSE(object):
 
         py = np.zeros((b.shape[0], self.prim_nr))
 
-        # collect for each primitive the right probability and multiplies them together
+        # collect for each primitive the right probability and adds them together (assume independent probabilities)
         for i, prim in enumerate(self.primitives):  # iterate over primitives
             # iterate over signal, 1st and 2nd derivatives, this is equal to iterate over params of polynom.
             prob = [params[sign][:, j] for j, sign in enumerate(self.all_primitives[prim]) if j < self.coeff_nr]
@@ -563,7 +587,7 @@ class GeneralQSE(object):
             eps = max(2.576 * stdev_estimation(ys), d)
             feature = proj_matrix.dot(ys)
             tol = 2 * tolerance # initialize tolerance that just higher
-            maxi = 0 # initialize maxiter
+            maxi = 0  # initialize maxiter
 
             while (tol > tolerance) and (maxi < maxiter):
                 _feature = feature
@@ -603,7 +627,7 @@ class GeneralQSE(object):
         # calculate projection matrix and update regr_basis and weights changed by new n_support
         proj_matrix = self.get_projection_matrix()
 
-        # make rolling windows with bandwidht bw over whole signal
+        # make rolling windows with bandwidth bw over whole signal
         y_stacks = self.signal_stack(signal)
 
         # gcv without cross correlation
@@ -618,7 +642,7 @@ class GeneralQSE(object):
 
         return np.max(gcv)  # np.mean(gcv_sc)
 
-    def ici_method(self, bw_init, signal, tau=4.0, r_thres=None, irls=True):
+    def ici_method(self, signal):
         """
         Use RICI method for finding best bandwidths and smooth it to reduce jumps. Proposed in paper A Signal Denoising Method Based
         on the Improved ICI Rule by Jonatan Lerga, Miroslav Vrankic, and Victor Sucic (2008)
@@ -634,40 +658,49 @@ class GeneralQSE(object):
             sel_features (ndarray): features from best bandwidth
             sel_stdev (ndarray): standard deviation of features of best bandwidth
             best_bws (ndarray): best bandwidths (smoothed and unsmoothed)ad
+
         """
-        hs = np.linspace(bw_init/10, bw_init*2, num=30, dtype='int16')
-        nh = len(hs)
+        # define important variables
+        nh = 30
         nx = len(signal)
         window_length = 11
+        dim = (nx, self.coeff_nr, nh)
+        stdev_est = stdev_estimation(signal)
+        ici_span = self.bw_options['ici_span']
+        r_thres = self.bw_options['rel_threshold']
 
+        # vector of all bandwidths to test
+        hs = np.linspace(self.bw_options['min_support'], self.bw_options['max_support'], num=nh, dtype='int16')
+
+        # initialize the arrays
         upper = np.full((nx, nh), np.nan)
         lower = np.full((nx, nh), np.nan)
-        dim = (nx, self.coeff_nr, nh)
         all_stdev = np.full(dim, np.nan)
         all_features = np.full(dim, np.nan)
-        stdev_est = stdev_estimation(signal)
+
+        # iterate over the bandwidths, make local polynom regression and caluclate the confidence intervalls
         for j, h in enumerate(hs):
             print('calculate bandwidth... ', h)
-            features, stdev = self.local_polynom_regression(signal, h, min_stdev=stdev_est, irls=irls)
+            features, stdev = self.local_polynom_regression(signal, h, min_stdev=stdev_est)
             feature_0 = features[:, 0]
-            upper[:, j] = feature_0 + tau * stdev_est
-            lower[:, j] = feature_0 - tau * stdev_est
+            upper[:, j] = feature_0 + ici_span * stdev_est
+            lower[:, j] = feature_0 - ici_span * stdev_est
             all_stdev[:, :, j] = stdev
             all_features[:, :, j] = features
 
+        # calculate minimas of upper confidence intervall and maximas of lower confidence intervalls.
         upper_min = np.minimum.accumulate(upper, axis=1)
         lower_max = np.maximum.accumulate(lower, axis=1)
 
         # take max of upper minimum which is bigger than the lower_max, if r_threshold defined then add this criteria
         if r_thres is not None:
-            rel_crit = (upper_min - lower_max) / (2 * tau * all_stdev[:, 0, :])
+            rel_crit = (upper_min - lower_max) / (2 * ici_span * all_stdev[:, 0, :])
             criteria_mask = (upper_min <= lower_max) & (rel_crit <= r_thres)
         else:
             criteria_mask = upper_min <= lower_max
 
+        # extract best index, attention: if all false then argmax gives first index but should take last index
         best_idx = np.argmax(criteria_mask, axis=1)
-
-        # if all false then argmax gives first index but should take last index
         best_idx = np.array([nh - 1 if idx == 0 and not criteria_mask[j, idx] else idx for j, idx in enumerate(best_idx)])
 
         # smooth the choosen bandwidth index to avoid unnecessary jumps
@@ -679,7 +712,6 @@ class GeneralQSE(object):
         nx_arange = np.arange(nx)
         sel_stdev = all_stdev[nx_arange, :, smoothed_idx]
         sel_features = all_features[nx_arange, :, smoothed_idx]
-
         best_bws = np.array([[hs[j] for j in best_idx], [hs[i] for i in smoothed_idx]])
 
         return sel_features, sel_stdev, best_bws.T
@@ -701,6 +733,7 @@ class GeneralQSE(object):
         else:
             bw_init = self.n_support
 
+        # extract features (polynomial coefficients) and std_deviation dependend on the bandwidth estimation
         if self.bw_estimation == 'fix':
             all_features, all_stdev = self.local_polynom_regression(signal, bw_init)
 
@@ -713,9 +746,9 @@ class GeneralQSE(object):
             # minimum = minimize(self.pmse_gcv, bw_init, method='L-BFGS-B', args=(signal,), bounds=((3, None),))
             # minimum = fmin(self.pmse_gcv, bw_init, args=(signal, ), xtol=1)
             # print(minimum)
-            hs = np.linspace(bw_init/20, bw_init*2, dtype='int16')
-
+            hs = np.linspace(self.bw_options['min_support'], self.bw_options['max_support'], dtype='int16')
             maxgcv = np.full(len(hs), np.nan)
+
             for j, n in enumerate(hs):
                 maxgcv[j] = self.pmse_gcv(n, signal)
 
@@ -729,13 +762,13 @@ class GeneralQSE(object):
             plt.show()
 
             best_bw = hs[np.argmin(maxgcv)]
-            print('best bandwidth found: ', self.n_support)
+            print('best bandwidth found: ', best_bw)
 
             all_features, all_stdev = self.local_polynom_regression(signal, best_bw)
 
         elif self.bw_estimation == 'ici':
             # featrues and stddev of variable bandwidth by applying the relative intersection of confidence intervals (RICI)
-            all_features, all_stdev, best_bw = self.ici_method(bw_init, signal, tau=4.4, r_thres=0.85)
+            all_features, all_stdev, best_bw = self.ici_method(signal)
 
         # calculate the probabilieties out of features and stdev
         all_primitive_prob = self.infer_probabilities(all_features, all_stdev)
@@ -827,36 +860,31 @@ class GeneralQSE(object):
 
 
 if __name__ == '__main__':
+    # relative path to data
     file = 'data/cam1cam5_intra_0_0.2_0.4__ly4ftr16w2__cam1_161007_0_0.2_0.4.csv'
 
-    # Part I. load data from csv
+    # load data from csv
     df = pd.read_csv(file, sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
-
     y = df['flood_index'].values
     #y = df['sensor_value'].values
 
-    # Part II. Algorithm setup and run
-    # A. Setup and Initialization with tunning parameters
+    # setup and initialization with tunning parameters
     epsi = 0.000001
-
     trans = [['Q0', 'Q0', 0.50], ['Q0', 'L', epsi], ['Q0', 'U', 0.50], ['Q0', 'F+', epsi],
              ['L',  'Q0', 0.33], ['L',  'L', 0.33], ['L',  'U', epsi], ['L',  'F+', 0.33],
              ['U',  'Q0', epsi], ['U',  'L', epsi], ['U',  'U', 0.50], ['U',  'F+', 0.50],
              ['F+', 'Q0', epsi], ['F+', 'L', 0.33], ['F+', 'U', 0.33], ['F+', 'F+', 0.33]]
 
-    bw_fix = dict(type='fix', n_support=20)
-    bw_ici = dict(type='ici', min_support=20, max_support=600, ici_span=4.4, rel_thres=0.85)
-    bw_gcv = dict(type='gcv', min_support=20, max_support=600)
+    bw_opt = dict(n_support=100, min_support=10, max_support=400, ici_span=3.4, rel_threshold=0.85, irls=False)
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans, bw_estimation='ici', bw_options=bw_opt)
 
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans, n_support=200, bw_estimation='ici')
-
-    # B. Run algorithms
+    # run algorithms
     t = time.process_time()
     result = qse.run(y)
     elapsed_time = time.process_time() - t
     print('time requirements: ', elapsed_time)
     print('finish')
 
-    # Part III: Display
+    # display results
     qse.plot(result)

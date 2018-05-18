@@ -44,12 +44,12 @@ if 0:
 
         print(df.corr(method='pearson'))
         epsi = 0.000001
-
         # d = 0.2 tendency to stay at same signal
         trans2 = [['Q0', 'Q0', 0.50], ['Q0', 'L+', epsi], ['Q0', 'U+', 0.50], ['Q0', 'F+', epsi],
                   ['L+', 'Q0', 0.33], ['L+', 'L+', 0.33], ['L+', 'U+', epsi], ['L+', 'F+', 0.33],
                   ['U+', 'Q0', epsi], ['U+', 'L+', epsi], ['U+', 'U+', 0.50], ['U+', 'F+', 0.50],
                   ['F+', 'Q0', epsi], ['F+', 'L+', 0.33], ['F+', 'U+', 0.33], ['F+', 'F+', 0.33]]
+
 
         run_configs = [dict(col='sensor_value', bw=300, trans=trans2, bw_est='ici', bw_tune=False),
                        dict(col='flood_index', bw=300, trans=trans2, bw_est='ici', bw_tune=False)]
@@ -60,8 +60,12 @@ if 0:
         for i, rc in enumerate(run_configs):
             new_path = path_store + f.split('.cs')[0] + '-' + rc['col']
             if not isfile(new_path + '.csv'):
+
+                bw_opt = dict(n_support=rc['bw'], min_support=20, max_support=400, ici_span=4.4, rel_threshold=0.85,
+                              irls=False)
                 qse = GeneralQSE(kernel='tricube', order=3, delta=0.01, transitions=rc['trans'], bw_estimation=rc['bw_est'],
-                                 n_support=rc['bw'])
+                                 bw_options=bw_opt)
+
                 signal = df[rc['col']].values
 
                 if rc['bw_tune']:
@@ -109,14 +113,18 @@ if 1:
         feat_sofi = df_sofi.values[:, 1 + 2 * coeff_nr + prim_nr:2 * coeff_nr + 2 * prim_nr + 1]
 
         plt.figure()
-        plt.subplot(2, 2, 1)
+        plt.subplot(3, 2, 1)
         plt.plot(sig_sens, sig_sofi, '.')
-        plt.subplot(2, 2, 2)
+        plt.subplot(3, 2, 2)
         plt.plot(sig_sm_sens, sig_sm_sofi, '.')
-        plt.subplot(2, 2, 3)
-        plt.plot(feat_sens[:, 1], feat_sofi[:, 1], '.')
-        plt.subplot(2, 2, 4)
-        plt.plot(feat_sens[:, 2], feat_sofi[:, 2], '.')
+        plt.subplot(3, 2, 3)
+        plt.plot(feat_sens[:, 0]-feat_sofi[:, 0], '-')
+        plt.subplot(3, 2, 4)
+        plt.plot(feat_sens[:, 1]-feat_sofi[:, 1], '-')
+        plt.subplot(3, 2, 5)
+        plt.plot(feat_sens[:, 2]-feat_sofi[:, 2], '-')
+        plt.subplot(3, 2, 6)
+        plt.plot(feat_sens[:, 3]-feat_sofi[:, 3], '-')
         plt.show()
 
         diff_all['sqe_diff'].append(square_diff(feat_sens, feat_sofi))
