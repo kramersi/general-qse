@@ -875,15 +875,16 @@ if __name__ == '__main__':
     # load data from csv
     df = pd.read_csv(file, sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
-    #y = df['flood_index'].values
-    y = df['sensor_value'].values
+    y = df['flood_index'].values
+    # y = df['sensor_value'].values
 
     # setup and initialization with tunning parameters
     epsi = 0.000001
-    trans = [['Q0', 'Q0', 0.50], ['Q0', 'L', epsi], ['Q0', 'U', 0.50], ['Q0', 'F+', epsi],
-             ['L',  'Q0', 0.33], ['L',  'L', 0.33], ['L',  'U', epsi], ['L',  'F+', 0.33],
-             ['U',  'Q0', epsi], ['U',  'L', epsi], ['U',  'U', 0.50], ['U',  'F+', 0.50],
-             ['F+', 'Q0', epsi], ['F+', 'L', 0.33], ['F+', 'U', 0.33], ['F+', 'F+', 0.33]]
+    stay = 1  # how much more probable to stay in same primitive
+    trans = [['Q0', 'Q0', 0.50 * stay], ['Q0', 'L', epsi], ['Q0', 'U', 0.50], ['Q0', 'F+', epsi],
+             ['L',  'Q0', 0.33], ['L',  'L', 0.33 * stay], ['L',  'U', epsi], ['L',  'F+', 0.33],
+             ['U',  'Q0', epsi], ['U',  'L', epsi], ['U',  'U', 0.50 * stay], ['U',  'F+', 0.50],
+             ['F+', 'Q0', epsi], ['F+', 'L', 0.33], ['F+', 'U', 0.33], ['F+', 'F+', 0.33 * stay]]
 
     bw_opt = dict(n_support=100, min_support=40, max_support=400, ici_span=3.4, rel_threshold=0.85, irls=False)
     qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans, bw_estimation='ici', bw_options=bw_opt)
