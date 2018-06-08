@@ -31,8 +31,9 @@ def tune_bandwidth(bw, qse, ref, sig):
 
 diff_all = dict(file=[], cosine_diff_0=[], cosine_diff_1=[], sqe_diff=[], correlation_trend=[], correlation_signal=[],
                 correlation_smoothed_signal=[])
-path = 'data/'
-path_store = 'results180517_delta01/'
+
+path = "C:\\Users\\kramersi\\polybox\\4.Semester\\Master_Thesis\\02_QualitativeTrendAnalysis\\data"
+path_store = "C:\\Users\\kramersi\\polybox\\4.Semester\\Master_Thesis\\02_QualitativeTrendAnalysis\\results\\results180607"
 
 # read in files
 if 0:

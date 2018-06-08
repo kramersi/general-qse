@@ -869,14 +869,18 @@ class GeneralQSE(object):
 
 
 if __name__ == '__main__':
-    # relative path to data
-    file = 'data/cam1cam5_intra_0_0.2_0.4__ly4ftr16w2__cam1_161007_0_0.2_0.4.csv'
+    import os
+    path = "C:\\Users\\kramersi\\polybox\\4.Semester\\Master_Thesis\\02_QualitativeTrendAnalysis\\data"  # windows
+    # path = "/Users/simonkramer/Documents/Polybox/4.Semester/Master_Thesis/02_QualitativeTrendAnanalyis/data"  # mac
+
+    file_name = 'cam1cam5_intra_0_0.2_0.4__ly4ftr16w2__cam1_161006A_0_0.2_0.4.csv'
+    file_path = os.path.join(path, file_name)
 
     # load data from csv
-    df = pd.read_csv(file, sep=',', dtype={'sensor_value': np.float64})
+    df = pd.read_csv(file_path, sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
-    y = df['flood_index'].values
-    # y = df['sensor_value'].values
+    # y = df['flood_index'].values
+    y = df['sensor_value'].values
 
     # setup and initialization with tunning parameters
     epsi = 0.000001
@@ -886,7 +890,7 @@ if __name__ == '__main__':
              ['U',  'Q0', epsi], ['U',  'L', epsi], ['U',  'U', 0.50 * stay], ['U',  'F+', 0.50],
              ['F+', 'Q0', epsi], ['F+', 'L', 0.33], ['F+', 'U', 0.33], ['F+', 'F+', 0.33 * stay]]
 
-    bw_opt = dict(n_support=100, min_support=40, max_support=400, ici_span=3.4, rel_threshold=0.85, irls=False)
+    bw_opt = dict(n_support=100, min_support=40, max_support=400, ici_span=3.4, rel_threshold=0.85, irls=True)
     qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans, bw_estimation='ici', bw_options=bw_opt)
 
     # run algorithms
