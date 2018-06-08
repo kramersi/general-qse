@@ -742,7 +742,8 @@ class GeneralQSE(object):
 
         # extract features (polynomial coefficients) and std_deviation dependend on the bandwidth estimation
         if self.bw_estimation == 'fix':
-            all_features, all_stdev = self.local_polynom_regression(signal, bw_init)
+            stdev_est = stdev_estimation(signal)
+            all_features, all_stdev = self.local_polynom_regression(signal, bw_init, min_stdev=stdev_est)
 
         elif self.bw_estimation == 'gcv':
             # methods: TNC, SLSQP, Nelder-Mead, COBYLA, L-BFGS-B
@@ -753,6 +754,7 @@ class GeneralQSE(object):
             # minimum = minimize(self.pmse_gcv, bw_init, method='L-BFGS-B', args=(signal,), bounds=((3, None),))
             # minimum = fmin(self.pmse_gcv, bw_init, args=(signal, ), xtol=1)
             # print(minimum)
+            stdev_est = stdev_estimation(signal)
             hs = np.linspace(self.bw_options['min_support'], self.bw_options['max_support'], num=self.n_bandwidth,
                              dtype='int16')
 
@@ -773,7 +775,7 @@ class GeneralQSE(object):
             best_bw = hs[np.argmin(maxgcv)]
             print('best bandwidth found: ', best_bw)
 
-            all_features, all_stdev = self.local_polynom_regression(signal, best_bw)
+            all_features, all_stdev = self.local_polynom_regression(signal, best_bw, stdev_est)
 
         elif self.bw_estimation == 'ici':
             # featrues and stddev of variable bandwidth by applying the relative intersection of confidence intervals (RICI)
@@ -796,6 +798,69 @@ class GeneralQSE(object):
 
         return memory
 
+    def present_plot(self, memory_sofi, memory_sens):
+        offset = 2 * self.coeff_nr + 1
+        state_range = np.arange(offset + self.prim_nr, offset + 2 * self.prim_nr)
+        prim_range = np.arange(offset, offset + self.prim_nr)
+        nr = np.arange(memory_sofi.shape[0])
+        colors = ['C0', 'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8', 'C9']
+
+        if self.bw_estimation == 'fix':
+            bw_conf = str(self.n_support)
+        else:
+            bw_conf = 'variable'
+
+        mapping = {'F+': 'Flat', 'L': 'Down', 'U': 'Up', 'Q0': 'Zero'}
+
+        prim_legend = tuple([mapping[p] for p in self.primitives])
+
+        plt.figure(figsize=(12, 8))
+
+        # raw and smoothed signal
+        p2 = plt.subplot(2, 2, 1)
+        plt.plot(nr, 100*memory_sofi[:, 0], 'k-')
+        plt.plot(nr, 100*memory_sofi[:, 1], 'b-')
+        plt.title('SOFI-Index: Signal')
+        plt.xlabel('Sample index [-]')
+        plt.ylabel('Signal value [%]')
+        plt.legend(('raw signal', 'smoothed, bandwidth=' + bw_conf), loc=1)
+
+        # plot states probabilities
+        plt.subplot(2, 2, 2, sharex=p2)
+        # plt.plot(nr - self.delay, memory[:, state_range], '-')
+        for i, r in enumerate(state_range):
+            plt.plot(nr, memory_sofi[:, r], '-', color=colors[i])
+        plt.title('SOFI-Index: Trend')
+        plt.xlabel('Sample index [-]')
+        plt.ylabel('P(State) [-]')
+        plt.legend(prim_legend,  loc=1)
+
+        # raw and smoothed signal
+        plt.subplot(2, 2, 3, sharex=p2)
+        plt.plot(nr, memory_sens[:, 0], 'k-')
+        plt.plot(nr, memory_sens[:, 1], 'b-')
+        plt.title('Sensor: Signal')
+        plt.xlabel('Sample index [-]')
+        plt.ylabel('Signal value [cm]')
+        plt.legend(('raw signal', 'smoothed, bandwidth=30'),  loc=1)
+
+        # plot states probabilities
+        plt.subplot(2, 2, 4, sharex=p2)
+        # plt.plot(nr - self.delay, memory[:, state_range], '-')
+        for i, r in enumerate(state_range):
+            plt.plot(nr, memory_sens[:, r], '-', color=colors[i])
+        plt.title('Sensor: Trend')
+        plt.xlabel('Sample index [-]')
+        plt.ylabel('P(State) [-]')
+        plt.legend(prim_legend, loc=10)
+
+        plt.subplots_adjust(wspace=0.3, hspace=0.3)
+
+        if self.plot_path is not None:
+            plt.savefig(self.plot_path + '_derivatives.pdf', format='pdf', orientation='landscape')
+        else:
+            plt.show(block=True)
+
     def plot(self, memory):
         """
         Plot the signal and the smoothed signal, the primitive probabilities and the primitive states.
@@ -810,6 +875,9 @@ class GeneralQSE(object):
         state_range = np.arange(offset + self.prim_nr, offset + 2 * self.prim_nr)
         prim_range = np.arange(offset, offset + self.prim_nr)
         nr = np.arange(memory.shape[0])
+
+        mapping = {'F+': 'Flat', 'L': 'Down', 'U': 'Up', 'Q0': 'Zero'}
+        prim_legend = tuple([mapping[p] for p in self.primitives])
 
         plt.figure(1)
 
@@ -836,7 +904,7 @@ class GeneralQSE(object):
         for i, r in enumerate(prim_range):
             plt.plot(nr, memory[:, r], '-', color=colors[i])
         plt.ylabel('P(Primitive) [-]')
-        plt.legend(tuple(self.primitives))
+        plt.legend(prim_legend)
 
         # plot states probabilities
         plt.subplot(4, 1, 4, sharex=p2)
@@ -845,7 +913,7 @@ class GeneralQSE(object):
             plt.plot(nr, memory[:, r], '-', color=colors[i])
         plt.xlabel('Sample index [-]')
         plt.ylabel('P(State) [-]')
-        plt.legend(tuple(self.primitives))
+        plt.legend(prim_legend)
 
         if self.plot_path is not None:
             plt.savefig(self.plot_path + '_states.pdf', format='pdf', orientation='landscape')
@@ -873,14 +941,14 @@ if __name__ == '__main__':
     path = "C:\\Users\\kramersi\\polybox\\4.Semester\\Master_Thesis\\02_QualitativeTrendAnalysis\\data"  # windows
     # path = "/Users/simonkramer/Documents/Polybox/4.Semester/Master_Thesis/02_QualitativeTrendAnanalyis/data"  # mac
 
-    file_name = 'cam1cam5_intra_0_0.2_0.4__ly4ftr16w2__cam1_161006A_0_0.2_0.4.csv'
+    file_name = 'cam1_intra_0_0.2_0.4__ly4ftr16w2__cam1_0_0.2_0.4.csv'
     file_path = os.path.join(path, file_name)
 
     # load data from csv
     df = pd.read_csv(file_path, sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
-    # y = df['flood_index'].values
-    y = df['sensor_value'].values
+    y_sofi = df['flood_index'].values
+    y_sens = df['sensor_value'].values
 
     # setup and initialization with tunning parameters
     epsi = 0.000001
@@ -890,12 +958,12 @@ if __name__ == '__main__':
              ['U',  'Q0', epsi], ['U',  'L', epsi], ['U',  'U', 0.50 * stay], ['U',  'F+', 0.50],
              ['F+', 'Q0', epsi], ['F+', 'L', 0.33], ['F+', 'U', 0.33], ['F+', 'F+', 0.33 * stay]]
 
-    bw_opt = dict(n_support=100, min_support=40, max_support=400, ici_span=3.4, rel_threshold=0.85, irls=True)
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans, bw_estimation='ici', bw_options=bw_opt)
+    bw_opt = dict(n_support=400, min_support=40, max_support=400, ici_span=3.4, rel_threshold=0.85, irls=True)
+    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans, bw_estimation='fix', bw_options=bw_opt)
 
     # run algorithms
     t = time.process_time()
-    result = qse.run(y)
+    result = qse.run(y_sofi)
     elapsed_time = time.process_time() - t
     print('time requirements: ', elapsed_time)
     print('finish')
