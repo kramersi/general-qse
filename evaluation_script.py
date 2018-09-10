@@ -185,7 +185,6 @@ for i, file_name in enumerate(files):  # loop through files
                 all_ac[sc].append(ac)
                 all_ce[sc].append(ce)
 
-
 df_ce = pd.DataFrame(all_ce, index=vids)
 df_ac = pd.DataFrame(all_ac, index=vids)
 
