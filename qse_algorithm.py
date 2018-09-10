@@ -34,17 +34,14 @@ If not, see <http://www.gnu.org/licenses/>.
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
-from scipy.optimize import minimize
+import matplotlib
 import matplotlib.pylab as plt
-import time
 
 
 __all__ = ['order_validation', 'kernel_validation', 'non_negative_validation', 'extract_primitives',
            'generate_trans_matrix', 'GeneralQSE']
 
 # ToDo: indicate that now not online but offline, make code also workable for Batch processing
-# ToDo: always show bandwidths in plot, not just if ici is chosen.
-# ToDo: possibility for verbose and storing or just showing
 
 
 def rolling_window(a, window):
@@ -58,45 +55,7 @@ def stdev_estimation(signal):
     """ estimates the standard deviation of a noisy signal, neglecting zero occurence. """
     ax = signal.ndim - 1
     diffs = np.absolute(np.diff(signal, axis=ax))
-
-    if ax == 0:
-        non_zero_ind = np.nonzero(diffs)[0]
-        if non_zero_ind.size == 0:
-            return 0.0
-        else:
-            non_zero_diff = diffs[np.nonzero(diffs)]
-            return np.median(non_zero_diff, axis=ax) / 0.9539
-
     return np.median(diffs, axis=ax) / 0.9539
-
-
-def sigma_eps_estimation(raw, filtered, show_results=False):
-    """ Extract the variance of the residual
-
-    Attributes:
-        raw (array): raw signal vector
-        filtered (array): filtered signal with polynomial kernel smoothing
-        show_results (bool): inidicates if plot of residuals should be plotted
-
-    Returns:
-        standard deviation of residuals
-
-    """
-    # raw = np.delete(raw, np.arange(self.n_support-1))
-    residuals = pd.Series(raw - filtered)  # .shift(-int(self.delay))
-    # print(np.cov((raw.values, filtered.values), rowvar=0))
-    if show_results is True:
-        plt.figure(3)
-        plt.subplot(3, 1, 1)
-        residuals.plot()
-        plt.subplot(3, 1, 2)
-        residuals.plot(kind='hist', bins=40)
-        plt.subplot(3, 1, 3)
-        raw.plot()
-        filtered.plot()
-        plt.show()
-
-    return residuals.std()
 
 
 def order_validation(order):
@@ -126,10 +85,16 @@ def non_negative_validation(value):
     Validate if value is negative and raise Validation error
 
     """
-    if value <= 0:
-        raise ValueError("The Value must not be negative.")
+    if isinstance(value, list):
+        if any(v < 0 for v in value):
+            raise ValueError("The Values in the list must not be negative")
+        else:
+            return value
     else:
-        return value
+        if value < 0:
+            raise ValueError("The Value must not be negative.")
+        else:
+            return value
 
 
 def extract_primitives(transitions):
@@ -186,8 +151,8 @@ class GeneralQSE(object):
     transition between primitives.
 
     Args:
-        sigma_eps (float): pre-supposed measurement error variance, its now not presupposed but calculated with
-        standard deviation of filtered signal and raw signal.
+        sigma_eps (float, str): pre-supposed measurement error variance, if set to 'auto' its not presupposed but
+            calculated with standard deviation of filtered signal and raw signal.
         order (int): order of regression model, must be higher than 2 (2: linear, 3: quadratic, etc)
         delta (float): bandwidth parameter for the probability of zero-valued derivative. It indicates at which
             Percent of the maximum signal value, 1st and 2nd derivative the Probability to be in zero state is 68%.
@@ -221,88 +186,85 @@ class GeneralQSE(object):
     irls_maxiter = 20  # maximal iteration for iteratively reweighted least square method
     irls_tol = 0.001  # tolerance for least square to stop iteration
     n_bandwidth = 30  # number of bandwidths between minimal and maximal n_support
-    ici_window = 11  # window size for moving average of estimated bandwidths with ICI
     extend_method = 'nearest'  # defines how signal should be extended 'nearest' or 'same'
-    plot_path = None  # if path is a string then resulting plots are stored as pdf in this path
-    # verbose = True  # defines if text should be shown
 
     # define all the transitions each sublist has start primitive, end primitive and transition probability in it.
     allowed_trans = [['Q', 'U+', 0.5], ['U+', 'L+', 1], ['L+', 'U+', 0.5], ['L+', 'Q0+', 1]]
 
     # all primitives are defined from all combination (4**3=64) only 39 make sense
     all_primitives = {
-        # list entries:  [sign of signal, sign of first_derivative, sign of second_derivative]
+        # list entries:  [sign of signal, sign of first_derivative, sign of second_derivative, legend name]
         # positive values
-        'M+': ['pos',     'zero',  'pos'],     # 'mountain positive'
-        'S+': ['pos',     'zero',  'zero'],    # 'saddle positive'
-        'V+': ['pos',     'zero',  'neg'],     # 'valley positive'
-        'B+': ['pos',     'pos',   'pos'],     # 'boost positive'],
-        'G+': ['pos',     'pos',   'zero'],    # 'equal growth positive'],
-        'C+': ['pos',     'pos',   'neg'],     # 'concave deceleration positive'],
-        'A+': ['pos',     'neg',   'pos'],     # 'antitonic acceleration positive'],
-        'E+': ['pos',     'neg',   'zero'],    # 'equal decrease positive'],
-        'D+': ['pos',     'neg',   'neg'],     # 'deceleration positive'],
+        'M+': ['pos',     'zero',  'pos', 'Mountain'],     # 'mountain positive'
+        'S+': ['pos',     'zero',  'zero', 'Saddle'],    # 'saddle positive'
+        'V+': ['pos',     'zero',  'neg', 'Valley'],      # 'valley positive'
+        'B+': ['pos',     'pos',   'pos', 'Boost'],     # 'boost positive'],
+        'G+': ['pos',     'pos',   'zero', 'Lin. Growth'],    # 'equal growth positive'],
+        'C+': ['pos',     'pos',   'neg', 'Con. Deceleration'],    # 'concave deceleration positive'],
+        'A+': ['pos',     'neg',   'pos', 'Ant. Accel.'],     # 'antitonic acceleration positive'],
+        'E+': ['pos',     'neg',   'zero', 'Lin. Decrease'],    # 'equal decrease positive'],
+        'D+': ['pos',     'neg',   'neg', 'Decelarion'],     # 'deceleration positive'],
 
         # negative values
-        'M-': ['neg',     'zero',  'pos'],     # 'mountain negative'],
-        'S-': ['neg',     'zero',  'zero'],    # 'saddle negative'],
-        'V-': ['neg',     'zero',  'neg'],     # 'valley negative'],
-        'B-': ['neg',     'pos',   'pos'],     # 'boost negative'],
-        'G-': ['neg',     'pos',   'zero'],    # 'equal growth negative'],
-        'C-': ['neg',     'pos',   'neg'],     # 'concave deceleration negative'],
-        'A-': ['neg',     'neg',   'pos'],     # 'antitonic acceleration negative'],
-        'E-': ['neg',     'neg',   'zero'],    # 'equal decrease negative'],
-        'D-': ['neg',     'neg',   'neg'],     # 'deceleration negative'],
+        'M-': ['neg',     'zero',  'pos', 'Mountain'],     # 'mountain negative'],
+        'S-': ['neg',     'zero',  'zero', 'Saddle'],    # 'saddle negative'],
+        'V-': ['neg',     'zero',  'neg', 'Valley'],     # 'valley negative'],
+        'B-': ['neg',     'pos',   'pos', 'Boost'],     # 'boost negative'],
+        'G-': ['neg',     'pos',   'zero', 'Lin. Growth'],    # 'equal growth negative'],
+        'C-': ['neg',     'pos',   'neg', 'Con. Deceleration'],     # 'concave deceleration negative'],
+        'A-': ['neg',     'neg',   'pos', 'Ant. Accel.'],     # 'antitonic acceleration negative'],
+        'E-': ['neg',     'neg',   'zero', 'Lin. Decrease'],    # 'equal decrease negative'],
+        'D-': ['neg',     'neg',   'neg', 'Decelarion'],     # 'deceleration negative'],
 
         # measured value ignored
-        'M':  ['ignore',  'zero',  'pos'],     # 'mountain'],
-        'S':  ['ignore',  'zero',  'zero'],    # 'saddle'],
-        'V':  ['ignore',  'zero',  'neg'],     # 'valley'],
-        'B':  ['ignore',  'pos',   'pos'],     # 'boost'],
-        'G':  ['ignore',  'pos',   'zero'],    # 'equal'],
-        'C':  ['ignore',  'pos',   'neg'],     # 'concave deceleration'],
-        'A':  ['ignore',  'neg',   'pos'],     # 'antitonic acceleration'],
-        'E':  ['ignore',  'neg',   'zero'],    # 'equal decrease'],
-        'D':  ['ignore',  'neg',   'neg'],     # 'deceleration'],
+        'M':  ['ignore',  'zero',  'pos', 'Mountain'],     # 'mountain'],
+        'S':  ['ignore',  'zero',  'zero', 'Saddle'],    # 'saddle'],
+        'V':  ['ignore',  'zero',  'neg', 'Valley'],     # 'valley'],
+        'B':  ['ignore',  'pos',   'pos', 'Boost'],     # 'boost'],
+        'G':  ['ignore',  'pos',   'zero', 'Lin. Growth'],    # 'equal'],
+        'C':  ['ignore',  'pos',   'neg', 'Con. Deceleration'],     # 'concave deceleration'],
+        'A':  ['ignore',  'neg',   'pos', 'Ant. Accel.'],     # 'antitonic acceleration'],
+        'E':  ['ignore',  'neg',   'zero', 'Lin. Decrease'],    # 'equal decrease'],
+        'D':  ['ignore',  'neg',   'neg', 'Decelarion'],     # 'deceleration'],
 
         # just sign of signal all derivatives are ignored
-        'Q0': ['zero',   'ignore', 'ignore'],  # 'zero signal'],
-        'Q+': ['pos',    'ignore', 'ignore'],  # 'positive signal'],
-        'Q-': ['neg',    'ignore', 'ignore'],  # 'negative signal'],
+        'Q0': ['zero',   'ignore', 'ignore', 'Zero'],  # 'zero signal'],
+        'Q+': ['pos',    'ignore', 'ignore', 'Pos'],  # 'positive signal'],
+        'Q-': ['neg',    'ignore', 'ignore', 'Negative'],  # 'negative signal'],
 
         # states where first derivative is ignored
-        'P+': ['pos',    'ignore', 'pos'],    # 'positive positive'],
-        'N+': ['pos',    'ignore', 'neg'],    # 'negative positive'],
-        'O+': ['pos',    'ignore', 'zero'],   # 'line positive'],
-        'P-': ['neg',    'ignore', 'pos'],    # 'positive negative'],
-        'N-': ['neg',    'ignore', 'neg'],    # 'negative negative'],
-        'O-': ['neg',    'ignore', 'zero'],   # 'line negative'],
-        'P':  ['ignore', 'ignore', 'pos'],    # 'postive'],
-        'N':  ['ignore', 'ignore', 'neg'],    # 'negative'],
-        'O':  ['ignore', 'ignore', 'zero'],   # 'line'],
+        'P+': ['pos',    'ignore', 'pos', '++'],    # 'positive positive'],
+        'N+': ['pos',    'ignore', 'neg', '-+'],    # 'negative positive'],
+        'O+': ['pos',    'ignore', 'zero', 'Lin. +'],   # 'line positive'],
+        'P-': ['neg',    'ignore', 'pos', '+-'],    # 'positive negative'],
+        'N-': ['neg',    'ignore', 'neg', '--'],    # 'negative negative'],
+        'O-': ['neg',    'ignore', 'zero', 'Lin. -'],   # 'line negative'],
+        'P':  ['ignore', 'ignore', 'pos', '+'],    # 'postive'],
+        'N':  ['ignore', 'ignore', 'neg', '-'],    # 'negative'],
+        'O':  ['ignore', 'ignore', 'zero', 'Line'],   # 'line'],
 
         # states where curvature (2nd derivative) is ignored
-        'U+': ['pos',    'pos',    'ignore'],  # 'upper positive'],
-        'L+': ['pos',    'neg',    'ignore'],  # 'lower positive'],
-        'F+': ['pos',    'zero',   'ignore'],  # 'flat positive'],
-        'U-': ['neg',    'pos',    'ignore'],  # 'upper negative'],
-        'L-': ['neg',    'neg',    'ignore'],  # 'lower negative'],
-        'F-': ['neg',    'zero',   'ignore'],  # 'flat negative'],
-        'U':  ['ignore', 'pos',    'ignore'],  # 'upper'],
-        'L':  ['ignore', 'neg',    'ignore'],  # 'lower']
-        'F':  ['ignore', 'zero',   'ignore'],  # 'flat']
+        'U+': ['pos',    'pos',    'ignore', 'Up+'],  # 'upper positive'],
+        'L+': ['pos',    'neg',    'ignore', 'Down-'],  # 'lower positive'],
+        'F+': ['pos',    'zero',   'ignore', 'Flat'],  # 'flat positive'],
+        'U-': ['neg',    'pos',    'ignore', 'Up-'],  # 'upper negative'],
+        'L-': ['neg',    'neg',    'ignore', 'Down-'],  # 'lower negative'],
+        'F-': ['neg',    'zero',   'ignore', 'Flat-'],  # 'flat negative'],
+        'U':  ['ignore', 'pos',    'ignore', 'Up'],  # 'upper'],
+        'L':  ['ignore', 'neg',    'ignore', 'Down'],  # 'lower']
+        'F':  ['ignore', 'zero',   'ignore', 'Flat'],  # 'flat']
     }
 
     bw_option = dict(n_support=None, min_support=10, max_support=100, ici_span=4.4, rel_threshold=0.85, m_estimator=True)
 
-    def __init__(self, kernel='tricube', order=3, delta=0.05, transitions=allowed_trans, bw_estimation='fix',
+    def __init__(self, kernel='tricube', order=3, delta=0.05, sigma_eps='auto', transitions=allowed_trans, bw_estimation='fix',
                  bw_options=bw_option):
 
         # initialisation of kernel regression properties
         self.bw_estimation = bw_estimation
         self.bw_options = bw_options
         self.n_support = bw_options['n_support']
-        self.sigma_eps = 1
+        self.sigma_eps = sigma_eps
         self.order = order_validation(order)
         self.kernel = kernel_validation(kernel)
         self.delta = non_negative_validation(delta)
@@ -344,11 +306,11 @@ class GeneralQSE(object):
         """
         stdev_data = np.std(signal)
         mean_data = np.mean(signal)
-        # init_bw = 1.06 * stdev_data/mean_data * len(signal) ** (- 1. / (4 + self.order)) * len(signal)
-        # print('ini_bw', init_bw)
         min_bw = 20
+
         init_bw = max(len(signal) * 0.05, min_bw) * stdev_data/mean_data
         print('initial bandwidth: ', init_bw)
+
         self.set_bandwidth(init_bw)
 
         return int(init_bw)
@@ -403,22 +365,17 @@ class GeneralQSE(object):
 
     def signal_stack(self, signal):
         """
-        Make polynomial kernel regression by creating array of all moving windows, calculating projection matrix and
-        calculating.
-        # Make signal longer at beginnig and end by the half of the delay, that filter exactly starts at first entry
-        # and not half of delay later. It does so by taking the nearest value and multiplies it.
+        If n_support is even number, add one value to back, that length correspond to each other.
+        Make signal longer at beginning and end by the half of the delay, that filter exactly starts at first entry
+        and not half of delay later. It does so by taking the nearest value and multiplies it.
+
         Args:
             signal: signal to be smoothed
-            method: how to extend the signal
 
         Return:
-            features=polynom-coefficient
+            y_stacks: stack of rolling windows
 
         """
-        # Extend signal at beginnig and end by the half of the moving window width, that filter exactly starts at first
-        # entry and not a delay later. It does so by taking the nearest value and multiplies it.
-        # If n_support is even number, add one value to back, that length correspond to each other.
-
         if self.extend_method == 'nearest':
             first = np.repeat(signal[0], self.delay)
             if self.n_support % 2 == 1:
@@ -439,7 +396,28 @@ class GeneralQSE(object):
 
         return y_stacks
 
-    def coefficient_uncertainty(self, proj_matrix, y_stacks, min_stdev=precision):
+    def param_confidence(self, proj_matrix, residuals):
+        """ calculates the confidence of the regression by taking diagonal entries of confidence matrix
+
+        Arguments:
+            proj_matrix (ndarry): linear projection matrix of regression
+            residuals (ndarray): residuals of error used for sigma epsilon
+
+        Returns:
+            stdev_b (list): standard deviation of each regression coefficient
+
+        """
+        if self.sigma_eps == 'auto':
+            sigma_eps = max(np.std(residuals), self.precision)
+        else:
+            sigma_eps = self.sigma_eps
+        sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
+        stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
+        stdev_b = stdev_b[0:self.coeff_nr]
+
+        return stdev_b
+
+    def coefficient_uncertainty(self, proj_matrix, y_stacks):
         """
         Get uncertainity of each polynom coefficient by taking diagonal entries of covariance matrix
 
@@ -457,17 +435,13 @@ class GeneralQSE(object):
         sigmas = np.full((sig_n, self.coeff_nr), np.nan)
 
         for i in range(sig_n):
-            residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
-            sigma_eps = max(np.std(residuals), min_stdev)
-            sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
-            stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
-            stdev_b = stdev_b[0:self.coeff_nr]
-
-            sigmas[i, :] = stdev_b
+            ysi = y_stacks.T[:, i]
+            residuals = ysi - np.dot(influence_matrix, ysi)
+            sigmas[i, :] = self.param_confidence(proj_matrix, residuals)
 
         return sigmas
 
-    def local_polynom_regression(self, signal, bw, min_stdev=precision):
+    def local_polynom_regression(self, signal, bw):
 
         self.set_bandwidth(bw)
         y_stacks = self.signal_stack(signal)
@@ -475,11 +449,11 @@ class GeneralQSE(object):
 
         if self.bw_estimation != 'fix' and self.bw_options['irls']:
             # calculates more robust features because iterativly weighted decreased in case of outliers
-            features, stdev = self.irls(y_stacks, d=min_stdev)
+            features, stdev = self.irls(y_stacks)
         else:
             # only if all values are not nan, but this is not the case because signal interpolated at beginning
             features = proj_matrix.dot(y_stacks.T).T
-            stdev = self.coefficient_uncertainty(proj_matrix, y_stacks, min_stdev)
+            stdev = self.coefficient_uncertainty(proj_matrix, y_stacks)
 
         return features, stdev
 
@@ -492,25 +466,18 @@ class GeneralQSE(object):
             stdev (ndarray): standard deviation of the polynom coefficients
 
         """
-        b = features / stdev  # normalise features by their standard deviation, necessary to use norm.cdf
-
         # get the max of each feature over time and take a procentage of it, attention to second derivative.
+        deltas = np.nanmax(np.absolute(features), axis=0) * self.delta + np.nanmin(np.absolute(features), axis=0)  # np.nanmax(np.absolute(b), axis=0) * [0.2, self.delta, self.delta]
 
-        deltas = np.nanmax(np.absolute(b), axis=0) * self.delta
-
-        # if deltas.size > 2:
-        #     deltas[-1] = deltas[-1]*2
-        #     deltas[-2] = deltas[-2]*2
-
-        # Convert regression coefficients to probabilities for qualitative state
-        prob_p = norm.logcdf(b - deltas)
-        prob_n = norm.logcdf(-b - deltas)
-        prob_pn = norm.logcdf(deltas - b)
+        # Convert regression coefficients to probabilities for qualitative state, normalised features to use norm.logcdf
+        prob_p = norm.logcdf((features - deltas) / stdev)
+        prob_n = norm.logcdf((-features - deltas) / stdev)
+        prob_pn = norm.logcdf((deltas - features) / stdev)
         prob_0 = prob_pn + np.log1p(-np.exp(prob_n-prob_pn))
 
-        params = {'pos': prob_p, 'neg': prob_n, 'zero': prob_0, 'ignore': np.zeros(b.shape)}
+        params = {'pos': prob_p, 'neg': prob_n, 'zero': prob_0, 'ignore': np.zeros(features.shape)}
 
-        py = np.zeros((b.shape[0], self.prim_nr))
+        py = np.zeros((features.shape[0], self.prim_nr))
 
         # collect for each primitive the right probability and adds them together (assume independent probabilities)
         for i, prim in enumerate(self.primitives):  # iterate over primitives
@@ -539,35 +506,7 @@ class GeneralQSE(object):
             states = np.exp(prob_n) / sum(np.exp(prob_n))
         return states
 
-    # not used because is very slow for bigger windows, therefore loop is better
-    def irls_tensor(self, y_stacks, d=precision):
-        x = self.regr_basis
-        w = self.w
-        n = y_stacks.shape[0]
-        w_tot = np.ones((n, w.size)) * w  # weights of kernel and of irls multiplied together
-        w_tot = w_tot[:, None]  # add a new dimension for automatic broadcasting
-        inner = np.linalg.inv(np.dot(x.T * w_tot, x))
-        proj_matrix = np.dot(inner, x.T) * w_tot
-        features = np.einsum('ijk,ik->ij', proj_matrix, y_stacks)
-
-        eps = np.maximum(2.576 * stdev_estimation(y_stacks), d)[:, None]
-
-        for _ in range(self.irls_maxiter):  # while any(tol < tolerance):  #
-            _features = features
-            _w_err = np.absolute(y_stacks - x.dot(features.T).T)
-            w_err = np.where(_w_err < eps, np.maximum(_w_err / 2, d), eps ** 2 / (2 * _w_err))
-            w_tot = w_err * w
-            w_tot = w_tot[:, None]
-            inner = np.linalg.inv(np.dot(x.T * w_tot, x))
-            proj_matrix = np.dot(inner, x.T) * w_tot
-            features = np.einsum('ijk,ik->ij', proj_matrix, y_stacks)
-            tol = np.sum(np.absolute(features - _features), axis=1)
-            if all(tol < self.irls_tol):
-                break
-
-        return features
-
-    def irls(self, y_stacks, d=precision):
+    def irls(self, y_stacks):
         """
         Iteratively reweighted least square method to find features, which are robust to outliers.
 
@@ -578,8 +517,8 @@ class GeneralQSE(object):
             tolerance: at which difference between old and new features the iteration should stop
 
         Return:
-            features: polynom coefficients for every time step
-            sigmas: standard deviation of each feature at every time step
+            features (ndarray): polynom coefficients for every time step
+            sigmas (ndarray): standard deviation of each feature at every time step
 
         """
         x = self.regr_basis
@@ -592,33 +531,29 @@ class GeneralQSE(object):
             w_err = np.ones(w.size)
             proj_matrix = np.linalg.inv((x.T * w * w_err).dot(x)).dot(x.T) * (w * w_err)
             ys = y_stacks.T[:, i]
-            eps = max(2.576 * stdev_estimation(ys), d)
+            eps = max(2.576 * stdev_estimation(ys), self.precision)
             feature = proj_matrix.dot(ys)
-            tol = 2 * self.irls_tol # initialize tolerance that just higher
+            tol = 2 * self.irls_tol  # initialize tolerance that just higher
             maxi = 0  # initialize maxiter
 
             while (tol > self.irls_tol) and (maxi < self.irls_maxiter):
                 _feature = feature
-                _w_err = np.absolute(ys - x.dot(feature)).T  # should be replaced with the sigma calculation y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
-                w_err = np.where(_w_err < eps, np.maximum(_w_err/2, d), eps**2/(2 * _w_err))  # Huber criteria
+                _w_err = np.absolute(ys - x.dot(feature)).T
+                w_err = np.where(_w_err < eps, np.maximum(_w_err/2, self.precision), eps**2/(2 * _w_err))  # Huber criteria
                 proj_matrix = np.linalg.inv((x.T * w * w_err).dot(x)).dot(x.T) * (w * w_err)
                 feature = proj_matrix.dot(ys)
                 tol = sum(abs(feature - _feature))
                 maxi += 1
 
             features[i, :] = feature
-            sigma_eps = max(np.std(_w_err), d)
-            sigma_b = (proj_matrix * sigma_eps).dot(proj_matrix.T)
-            stdev_b = np.diag(sigma_b) ** (1 / 2)  # point-wise standard deviations out of diagonal covariance matrix
-            stdev_b = stdev_b[0:self.coeff_nr]
-            sigmas[i, :] = stdev_b
+            sigmas[i, :] = self.param_confidence(proj_matrix, _w_err)
 
         return features, sigmas
 
     def pmse_gcv(self, bw, signal):
         """
         calculating the predicted regression error if leaving one out cross validation is done. But instead of
-        iterating n times over the signal length by leaving one away, the error is estimated whith the generalised
+        iterating n times over the signal length by leaving one away, the error is estimated with the generalised
         cross validation approximation. Therefore just one iteration is needed per bandwidth estimation.
 
         Args:
@@ -648,7 +583,22 @@ class GeneralQSE(object):
             residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
             gcv[i] = 1 / n * np.nansum(residuals ** 2) / (1 - trace / n) ** 2  # Generated cross validation
 
-        return np.max(gcv)  # np.mean(gcv_sc)
+        return np.max(gcv)
+
+    def gcv_ici(self, signal, bws):
+        sig_n = signal.size
+        gcv = np.full(sig_n, np.nan)
+        trace = self.order
+        for i in range(sig_n):
+            n = bws[i]
+            self.set_bandwidth(n)
+            y_stacks = self.signal_stack(signal)
+            proj_matrix = self.get_projection_matrix()
+            influence_matrix = (self.regr_basis.dot(proj_matrix))
+            residuals = y_stacks.T[:, i] - np.dot(influence_matrix, y_stacks.T[:, i])
+            gcv[i] = 1 / n * np.nansum(residuals ** 2) / (1 - trace / n) ** 2  # Generated cross validation
+
+        return np.max(gcv)
 
     def ici_method(self, signal):
         """
@@ -672,7 +622,6 @@ class GeneralQSE(object):
         nh = self.n_bandwidth
         nx = len(signal)
         dim = (nx, self.coeff_nr, nh)
-        stdev_est = stdev_estimation(signal)
         ici_span = self.bw_options['ici_span']
         r_thres = self.bw_options['rel_threshold']
 
@@ -685,13 +634,14 @@ class GeneralQSE(object):
         all_stdev = np.full(dim, np.nan)
         all_features = np.full(dim, np.nan)
 
-        # iterate over the bandwidths, make local polynom regression and caluclate the confidence intervalls
+        # iterate over the bandwidths, make local polynom regression and calculate the confidence intervals
         for j, h in enumerate(hs):
             print('calculate bandwidth... ', h)
-            features, stdev = self.local_polynom_regression(signal, h, min_stdev=stdev_est)
+            features, stdev = self.local_polynom_regression(signal, h)
             feature_0 = features[:, 0]
-            upper[:, j] = feature_0 + ici_span * stdev_est
-            lower[:, j] = feature_0 - ici_span * stdev_est
+            stddev_0 = stdev[:, 0]
+            upper[:, j] = feature_0 + ici_span * stddev_0
+            lower[:, j] = feature_0 - ici_span * stddev_0
             all_stdev[:, :, j] = stdev
             all_features[:, :, j] = features
 
@@ -708,22 +658,17 @@ class GeneralQSE(object):
 
         # extract best index, attention: if all false then argmax gives first index but should take last index
         best_idx = np.argmax(criteria_mask, axis=1)
-        best_idx = np.array([nh - 1 if idx == 0 and not criteria_mask[j, idx] else idx for j, idx in enumerate(best_idx)])
-
-        # smooth the choosen bandwidth index to avoid unnecessary jumps
-        smoothed_idx = pd.Series(best_idx).rolling(self.ici_window, center=True).mean()
-        smoothed_idx = smoothed_idx.fillna(method='ffill')
-        smoothed_idx = smoothed_idx.fillna(method='bfill').values.astype(int)
+        best_idx = np.array([nh-1 if idx == 0 and not criteria_mask[j, idx] else idx for j, idx in enumerate(best_idx)])
 
         # select the features and standard deviation of the chosen bandwidth
         nx_arange = np.arange(nx)
-        sel_stdev = all_stdev[nx_arange, :, smoothed_idx]
-        sel_features = all_features[nx_arange, :, smoothed_idx]
-        best_bws = np.array([[hs[j] for j in best_idx], [hs[i] for i in smoothed_idx]])
+        sel_stdev = all_stdev[nx_arange, :, best_idx]
+        sel_features = all_features[nx_arange, :, best_idx]
+        best_bws = np.array([hs[i] for i in best_idx])
 
         return sel_features, sel_stdev, best_bws.T
 
-    def run(self, signal):
+    def run(self, signal, save_ici_path=None):
         """
         Run the QSE algorithme, by iterating over each data point in the signal
 
@@ -734,6 +679,7 @@ class GeneralQSE(object):
             memory: array with all states, primitive probabilities etc.
 
         """
+        n_signal = signal.shape[0]
 
         if self.n_support is None:
             bw_init = self.initialize_bandwidth(signal)
@@ -742,17 +688,10 @@ class GeneralQSE(object):
 
         # extract features (polynomial coefficients) and std_deviation dependend on the bandwidth estimation
         if self.bw_estimation == 'fix':
+            best_bw = np.full(n_signal, bw_init)
             all_features, all_stdev = self.local_polynom_regression(signal, bw_init)
 
         elif self.bw_estimation == 'gcv':
-            # methods: TNC, SLSQP, Nelder-Mead, COBYLA, L-BFGS-B
-            #cons = ({'type': 'eq', 'fun': lambda x: max(x-int(x))},)
-            # minimum = minimize(self.pmse_gcv, bw_init, method='Nelder-Mead', args=(signal,))
-            # minimum = minimize(self.pmse_gcv, bw_init, method='SLSQP', args=(signal,), bounds=((3, None),), constraints=cons)  # , options={'xatol': 1.0})
-            # minimum = minimize(self.pmse_gcv, bw_init, method='COBYLA', args=(signal,))
-            # minimum = minimize(self.pmse_gcv, bw_init, method='L-BFGS-B', args=(signal,), bounds=((3, None),))
-            # minimum = fmin(self.pmse_gcv, bw_init, args=(signal, ), xtol=1)
-            # print(minimum)
             hs = np.linspace(self.bw_options['min_support'], self.bw_options['max_support'], num=self.n_bandwidth,
                              dtype='int16')
 
@@ -761,17 +700,15 @@ class GeneralQSE(object):
             for j, n in enumerate(hs):
                 maxgcv[j] = self.pmse_gcv(n, signal)
 
-            # gcv_df = pd.DataFrame({'bandwidth': np.array(hs), 'max_gcv': maxgcv})
-            # gcv_df.to_csv('gcv_results/gcv.csv')
-
             plt.figure(3)
             plt.plot(np.array(hs), maxgcv)
             plt.xlabel('Bandwidth [#]')
             plt.ylabel('GCV-Score')
             plt.show()
 
-            best_bw = hs[np.argmin(maxgcv)]
-            print('best bandwidth found: ', best_bw)
+            best = hs[np.argmin(maxgcv)]
+            best_bw = np.full(n_signal, best)
+            print('best bandwidth found: ', best)
 
             all_features, all_stdev = self.local_polynom_regression(signal, best_bw)
 
@@ -779,7 +716,29 @@ class GeneralQSE(object):
             # featrues and stddev of variable bandwidth by applying the relative intersection of confidence intervals (RICI)
             all_features, all_stdev, best_bw = self.ici_method(signal)
 
-        # calculate the probabilieties out of features and stdev
+        elif self.bw_estimation == 'ici-gcv':
+            tau = np.linspace(0.05, 5, num=7)
+
+            maxgcv = np.full(len(tau), np.nan)
+            for j, n in enumerate(tau):
+                self.bw_options['ici_span'] = n
+                _, _, best_bw = self.ici_method(signal)
+                maxgcv[j] = self.gcv_ici(signal, best_bw)
+
+            plt.figure()
+            plt.plot(np.array(tau), maxgcv)
+            plt.xlabel('ICI span [#]')
+            plt.ylabel('GCV-Score')
+            if save_ici_path is not None:
+                plt.savefig(save_ici_path + '_ici.pdf', format='pdf')
+            else:
+                plt.show()
+
+            best = tau[np.argmin(maxgcv)]
+            self.bw_options['ici_span'] = best
+            all_features, all_stdev, best_bw = self.ici_method(signal)
+
+        # calculate the probabilities out of features and stdev
         all_primitive_prob = self.infer_probabilities(all_features, all_stdev)
 
         # make hidden markov model by iteration over each timestep
@@ -789,94 +748,135 @@ class GeneralQSE(object):
             states = self.estimate_states(prim_prob, states)
             all_states[i, :] = states
 
-        if self.bw_estimation == 'ici':
-            memory = np.hstack((signal[:, None], all_features, all_stdev, np.exp(all_primitive_prob), all_states, best_bw))
-        else:
-            memory = np.hstack((signal[:, None], all_features, all_stdev, np.exp(all_primitive_prob), all_states))
+        memory = np.hstack((signal[:, None], all_features, all_stdev, np.exp(all_primitive_prob), all_states,
+                            best_bw[:, None]))
 
         return memory
 
-    def plot(self, memory):
+    def plot(self, memory, gt=None, save_path=None, plot_prim_prob=False, plot_bw=False, text=None):
         """
         Plot the signal and the smoothed signal, the primitive probabilities and the primitive states.
 
         Args:
             memory (ndarray): values of the result of the QSE (nr, signal, features, primitive prob., primitive states)
-            signal (ndarray): raw signal
-            path (str): path were figures should be saved, if None then not saved but just showed
+            gt (ndarray): memory of ground truth to plot on bottom if not None, it must contain the same primitives
+            save_path (str): path were figures should be saved, if None then not saved but just showed
+            plot_prim_prob (bool): indicates if primitive probability as intermediate step in qse should be plotted too.
+            plot_bw (bool): if bandwidht should be ploted or not. (important if adaptive bandwidth to see what happens.)
+            text (str): text box can be appended which is shown in first graph on top left corner (e.g. corr coeff).
 
         """
-        offset = 2 * self.coeff_nr + 1
-        state_range = np.arange(offset + self.prim_nr, offset + 2 * self.prim_nr)
-        prim_range = np.arange(offset, offset + self.prim_nr)
-        nr = np.arange(memory.shape[0])
+        # font settings
+        font = {'family': 'sans-serif', 'size': 16}
+        matplotlib.rc('font', **font)
 
-        plt.figure(1)
+        # definition of used variables
+        offset = 2 * self.coeff_nr + 1  # offset, because first columns are reserved for features, std. dev
+        state_range = np.arange(offset + self.prim_nr, offset + 2 * self.prim_nr)  # column index of state probabilities
+        prim_range = np.arange(offset, offset + self.prim_nr)  # column index of primitive probabilities
+        prim_legend = tuple([self.all_primitives[p][3] for p in self.primitives])  # select name of primitive
+        memory_list = [memory] if gt is None else [memory, gt]  # results to iterate over reference and signals
+        idx = 0  # start index of axes
+        nr = np.arange(memory.shape[0])  # sample index number
+
+        # amount of subplots according to additional information plots
+        subplot_nr = 3 if gt is not None else 2
+        subplot_nr += 1 if plot_prim_prob is True else 0
+        subplot_nr += 1 if plot_bw is True else 0
+
+        ratios = [3] + [2] * (subplot_nr - 1)  # ratio to make signal plot on half bigger than probability plots
+
+        if self.bw_estimation == 'fix':
+            bw_conf = str(self.n_support)
+        else:
+            bw_conf = str(self.bw_options['min_support']) + '-' + str(self.bw_options['max_support'])
 
         # plot signal and filtered signal
-        p2 = plt.subplot(4, 1, 1)
-        # plt.plot(nr, signal[self.n_support-2:-1], 'k-')
-        plt.plot(nr, memory[:, 0], 'k-')
-        # plt.plot(nr - self.delay, memory[:, 0], 'b-')
-        plt.plot(nr, memory[:, 1], 'b-')
-        plt.ylabel('Signal value [-]')
-        plt.legend(('raw signal', 'smoothed signal'))
+        fig, ax = plt.subplots(nrows=subplot_nr, ncols=1, sharex=True, figsize=(12, 7),
+                               gridspec_kw={'height_ratios': ratios})
+        l1 = ax[idx].plot(nr, memory[:, 0], 'k-', label='CCTV flood extraction')
+        # l2 = ax[idx].plot(nr, memory[:, 1], 'g-', label='Smoothed, bw=' + bw_conf)
+        ax[idx].set_ylabel('Water pixel proportion [-]', fontsize=14)
 
-        # plot bandwidths
-        plt.subplot(4, 1, 2, sharex=p2)
-        plt.plot(nr, memory[:, -2])
-        plt.plot(nr, memory[:, -1])
-        plt.ylabel('Bandwidth [-]')
-        plt.legend(('raw', 'smoothed'))
+        # if ground truth available, plot it on a secondary y axis
+        if gt is not None:
+            ax2 = ax[idx].twinx()  # add second axis
+            l3 = ax2.plot(nr, gt[:, 0], 'r--', label='Reference measurement')
+            ax2.set_ylabel('Level [cm]', color='r')
+            ax2.tick_params('y', colors='r')
 
-        # plot primitive probabilities
-        colors = ['C0', 'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8', 'C9']
-        plt.subplot(4, 1, 3, sharex=p2)
-        # plt.plot(nr - self.delay, memory[:, prim_range], '-')
-        for i, r in enumerate(prim_range):
-            plt.plot(nr, memory[:, r], '-', color=colors[i])
-        plt.ylabel('P(Primitive) [-]')
-        plt.legend(tuple(self.primitives))
+        # add legend for first subplot
+        lns = l1 + l3 if gt is not None else l1
+        labs = [l.get_label() for l in lns]
+        ax[0].legend(lns, labs, loc='upper left')
+        if text is not None:
+            ax[0].text(0.8, 0.95, text, transform=ax[0].transAxes, fontsize=16,
+                       verticalalignment='top', bbox=dict(facecolor='grey', alpha=0.3))
 
-        # plot states probabilities
-        plt.subplot(4, 1, 4, sharex=p2)
-        # plt.plot(nr - self.delay, memory[:, state_range], '-')
-        for i, r in enumerate(state_range):
-            plt.plot(nr, memory[:, r], '-', color=colors[i])
-        plt.xlabel('Sample index [-]')
-        plt.ylabel('P(State) [-]')
-        plt.legend(tuple(self.primitives))
+        # plot bandwidths if plot_bw is true
+        if plot_bw is True:
+            idx += 1
+            ax_bw = ax[idx]
+            ax_bw.plot(nr, memory[:, -1])
+            ax_bw.set_ylabel('Bandwidth [#]')
 
-        if self.plot_path is not None:
-            plt.savefig(self.plot_path + '_states.pdf', format='pdf', orientation='landscape')
+        # plot primitive probabilities of signal if parameter is true
+        if plot_prim_prob is True:
+            idx += 1
+            axi = ax[idx]
+            axi.stackplot(nr, *memory[:, prim_range].T, labels=prim_legend)
+            axi.set_ylabel('P(Primitive) [-]')
+            axi.set_yticks(np.arange(0, 1.5, step=0.5))
+            axi.legend(bbox_to_anchor=(0.96, 1), loc=2, borderaxespad=0.)
+
+        # plot states probabilities of signal
+        idx += 1
+        for i, r in enumerate(memory_list):
+            name = ', ref.' if i == 1 else ''
+            axi = ax[i + idx]
+            axi.stackplot(nr, *r[:, state_range].T, labels=prim_legend)
+            axi.set_ylabel('P(Trend)' + name + ' [-]')
+            axi.set_yticks(np.arange(0, 1.5, step=0.5))
+            axi.legend(bbox_to_anchor=(0.96, 1), loc=2, borderaxespad=0.)
+
+        axi.set_xlabel('Sample index [-]')
+        plt.tight_layout(h_pad=0.1)
+
+        if save_path is not None:
+            plt.savefig(save_path + '_states.pdf', format='pdf')
             plt.close(1)
 
         # plot feature derivatives and their confidence interval
-        plt.figure(2)
-        p3 = plt.subplot(self.coeff_nr, 1, 1)
+        fig, ax = plt.subplots(nrows=self.coeff_nr, ncols=1, sharex=True, figsize=(8, 6))
         for i in range(self.coeff_nr):
-            plt.subplot(self.coeff_nr, 1, i+1, sharex=p3)
-            plt.plot(nr, memory[:, i + 1], '-')
-            plt.plot(nr, memory[:, i + 1] + 2 * memory[:, self.coeff_nr+i+1], '--')
-            plt.plot(nr, memory[:, i + 1] - 2 * memory[:, self.coeff_nr+i+1], '--')
-            plt.xlabel('Sample index [-]')
-            plt.ylabel('derivative: ' + str(i))
+            axi = ax[i]
+            axi.plot(nr, memory[:, i + 1], '-')
+            axi.plot(nr, memory[:, i + 1] + 2 * memory[:, self.coeff_nr+i+1], '--')
+            axi.plot(nr, memory[:, i + 1] - 2 * memory[:, self.coeff_nr+i+1], '--')
+            axi.set_ylabel(str(i) + '. Derivative')
+        axi.set_xlabel('Sample index [-]')
+        plt.tight_layout(h_pad=0.1)
 
-        if self.plot_path is not None:
-            plt.savefig(self.plot_path + '_derivatives.pdf', format='pdf', orientation='landscape')
+        if save_path is not None:
+            plt.close()
         else:
             plt.show(block=True)
 
 
 if __name__ == '__main__':
-    # relative path to data
-    file = 'data/cam1cam5_intra_0_0.2_0.4__ly4ftr16w2__cam1_161007_0_0.2_0.4.csv'
+    import os
+    import time
+    #path = "C:\\Users\\kramersi\\polybox\\4.Semester\\Master_Thesis\\02_QualitativeTrendAnalysis\\data"  # windows
+    path = "/Users/simonkramer/Documents/Polybox/4.Semester/Master_Thesis/02_QualitativeTrendAnalysis/data"  # mac
+
+    file_name = 'cam1cam5_intra_0_0.2_0.4__ly4ftr16w2__cam1_0_0.2_0.4.csv'
+    file_path = os.path.join(path, file_name)
 
     # load data from csv
-    df = pd.read_csv(file, sep=',', dtype={'sensor_value': np.float64})
+    df = pd.read_csv(file_path, sep=',', dtype={'sensor_value': np.float64})
     df = df.interpolate()
-    y = df['flood_index'].values
-    # y = df['sensor_value'].values
+    y_sofi = df['flood_index'].values
+    y_sens = df['sensor_value'].values
 
     # setup and initialization with tunning parameters
     epsi = 0.000001
@@ -886,12 +886,12 @@ if __name__ == '__main__':
              ['U',  'Q0', epsi], ['U',  'L', epsi], ['U',  'U', 0.50 * stay], ['U',  'F+', 0.50],
              ['F+', 'Q0', epsi], ['F+', 'L', 0.33], ['F+', 'U', 0.33], ['F+', 'F+', 0.33 * stay]]
 
-    bw_opt = dict(n_support=100, min_support=40, max_support=400, ici_span=3.4, rel_threshold=0.85, irls=False)
-    qse = GeneralQSE(kernel='tricube', order=3, delta=0.05, transitions=trans, bw_estimation='ici', bw_options=bw_opt)
+    bw_opt = dict(n_support=400, min_support=9, max_support=400, ici_span=0.2, rel_threshold=0.85, irls=False)
+    qse = GeneralQSE(kernel='tricube', order=3, delta=[0.16, 0.05, 1], transitions=trans, bw_estimation='ici-gcv', bw_options=bw_opt)
 
     # run algorithms
     t = time.process_time()
-    result = qse.run(y)
+    result = qse.run(y_sofi)
     elapsed_time = time.process_time() - t
     print('time requirements: ', elapsed_time)
     print('finish')
