@@ -1,8 +1,11 @@
+""" auxaliry file which provides difference metrics for comparing two qualitative trends. """
+
 import numpy as np
 import pandas as pd
 import matplotlib.pylab as plt
 from scipy.stats import spearmanr
 from os import listdir
+
 
 # -------------------------------------------
 # Difference Metrics (p=prediction, t=truth)
@@ -83,6 +86,7 @@ def spearman_corr(p, t, axis=0, col=4):
     print('avg spearman correlation: ', s_mean)
 
     return s_mean
+
 
 # ------------------------
 # calculations for tuning

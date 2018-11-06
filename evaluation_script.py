@@ -9,6 +9,18 @@ from diff_metrics import square_diff, cosine_diff, cross_entropy, classification
 
 
 def ref_pred_comparison(y_pred, y_truth, p, store=None, bw_ref=40):
+    """ run qse on prediction and ground trutht with differnt parameter sets
+
+        Args:
+            y_pred (ndarray): vector of prediction signal (extracted sofi)
+            y_truth (ndarray): vector of ground truth signal (sensor signal)
+            p (dict): dictonary holding the parameters for the trend analysis of the prediction
+            store (str): path where created plot should be stored. If None then not stored
+            bw_ref (int): fixed bandwidth for the ground truth signal
+
+        Return:
+            classification accuracy and cross entropy of trends
+    """
     epsi = 0.000001
     trans = [['Q0', 'Q0', 0.50], ['Q0', 'L', epsi], ['Q0', 'U', 0.50], ['Q0', 'F+', epsi],
                  ['L', 'Q0', 0.33], ['L', 'L', 0.33], ['L', 'U', epsi], ['L', 'F+', 0.33],
@@ -48,6 +60,9 @@ def ref_pred_comparison(y_pred, y_truth, p, store=None, bw_ref=40):
 
 
 def create_scenarios(delta=[0.16, 0.05,1], ici=0.2):
+    """ setup some scenarios based on the delta and the ici. Needed for the master thesis.
+
+    """
     # setup and initialization with tunning parameters
     epsi = 0.000001
 
@@ -94,6 +109,9 @@ def create_scenarios(delta=[0.16, 0.05,1], ici=0.2):
 
 
 def bar_plot_results(ce, acc, labels, save_path=None):
+    """ plot bar where different scenarios can be compared
+
+    """
     font = {'family': 'serif', 'size': 12}
     matplotlib.rc('font', **font)
 
@@ -161,6 +179,7 @@ sel_sc = ['0 Standard', '4 Bandwidth adapted']
 # select video
 sel_vid = [1]
 
+# initialize dictionaries
 for key in params:
     if key in sel_sc:
         all_ac[key] = []
@@ -191,13 +210,13 @@ for i, file_name in enumerate(files):  # loop through files
                 all_ac[sc].append(ac)
                 all_ce[sc].append(ce)
 
+# transform to dataframe, append the mean and store it as csv
 df_ce = pd.DataFrame(all_ce, index=vids)
 df_ac = pd.DataFrame(all_ac, index=vids)
-
 df_ac.loc['Mean'] = df_ac.mean()
 df_ce.loc['Mean'] = df_ce.mean()
-
 df_ce.to_csv(os.path.join(s_path, 'cross_entropy_data.csv'))
 df_ce.to_csv(os.path.join(s_path, 'accuracy_data.csv'))
 
+# plot the results
 bar_plot_results(df_ce, df_ac, tuple(vids), save_path=s_path)
