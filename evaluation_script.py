@@ -1,3 +1,4 @@
+""" script that compares trend analyis of prediction with ground truth for sofi extractions from different cctv """
 import os
 import numpy as np
 import pandas as pd
@@ -44,6 +45,7 @@ def ref_pred_comparison(y_pred, y_truth, p, store=None, bw_ref=40):
     qse_sofi.plot(res_sofi, res_sens, text=None, save_path=store, plot_prim_prob=False, plot_bw=False)
 
     return ce, ac
+
 
 def create_scenarios(delta=[0.16, 0.05,1], ici=0.2):
     # setup and initialization with tunning parameters
@@ -132,27 +134,31 @@ def bar_plot_results(ce, acc, labels, save_path=None):
         plt.show()
 
 
-path = "/Users/simonkramer/Documents/Polybox/4.Semester/Master_Thesis/03_ImageSegmentation/structure_vidFloodExt/signal"  # mac
-s_path = "/Users/simonkramer/Documents/Polybox/4.Semester/Master_Thesis/03_ImageSegmentation/structure_vidFloodExt/trends_poster"
-#path = "C:\\Users\\kramersi\\polybox\\4.Semester\\Master_Thesis\\03_ImageSegmentation\\structure_vidFloodExt\\signal"  # windows
-#s_path = "C:\\Users\\kramersi\\polybox\\4.Semester\\Master_Thesis\\03_ImageSegmentation\\structure_vidFloodExt\\trends_presi"
+path = "Q:\Abteilungsprojekte\eng\SWWData\SimonKramer\QSE\datasets"  # windows
+s_path = "Q:\Abteilungsprojekte\eng\SWWData\SimonKramer\QSE\\results"
 
 if not os.path.isdir(s_path):
     os.mkdir(s_path)
 
 videos = ['FloodXCam1', 'FloodXCam5', 'HoustonGarage', 'AthleticPark', 'HarveyParking', 'BayouBridge']
-models = ['train_test_l5_refaug', 'train_test_l5_aug_reduced', 'train_test_l5_']
+models = ['train_test_l5_']
 deltas = [[0.1, 0.01, 1], [0.05, 0.02, 1], [0.16, 0.01, 1], [0.1, 0.04, 1], [0.07, 0.03, 1], [0.1, 0.02, 1]]
 icis = [0.2, 0.3, 0.2, 0.2, 0.2, 0.5]
 scs = ['sc4', 'sc4', 'sc4', 'sc4', 'sc4', 'sc5']
-files = [models[2] + vid + '__' + vid + '__signal.csv' for vid in videos]
 
+# create array of csv files stored in path
+files = [models[0] + vid + '__' + vid + '__signal.csv' for vid in videos]
+
+# create different scenarios of qse hyperparameters
 params = create_scenarios()
 all_ac = {}
 all_ce = {}
 vids = []
-#sel_sc = ['0 Standard', '1 Smoothed', '2 Zero classed', '3 Error estimated']  #
-sel_sc = ['4 Bandwidth adapted']  # 'Markov transitioned'
+# select certain scenarios from  '0 Standard', '1 Smoothed', '2 Zero classed', '3 Error estimated',
+# '4 Bandwidth adapted', '5 Outlier weighted', '6 Markov transitioned'
+sel_sc = ['0 Standard', '4 Bandwidth adapted']
+
+# select video
 sel_vid = [1]
 
 for key in params:

@@ -179,6 +179,8 @@ class GeneralQSE(object):
                 irls (bool): boolean which indicates, if outliers should be given less weight in the regression by using
                     iteratively reweighted least square method (IRLS).
 
+            ici-gcv (best parameter set for adaptive bandwidth found with generalized cross validation)
+
     """
 
     # define constants for certain calculations
@@ -866,10 +868,10 @@ class GeneralQSE(object):
 if __name__ == '__main__':
     import os
     import time
-    #path = "C:\\Users\\kramersi\\polybox\\4.Semester\\Master_Thesis\\02_QualitativeTrendAnalysis\\data"  # windows
-    path = "/Users/simonkramer/Documents/Polybox/4.Semester/Master_Thesis/02_QualitativeTrendAnalysis/data"  # mac
 
-    file_name = 'cam1cam5_intra_0_0.2_0.4__ly4ftr16w2__cam1_0_0.2_0.4.csv'
+    # sets path and file name to analyse
+    path = "Q:\Abteilungsprojekte\eng\SWWData\SimonKramer\QSE\datasets"
+    file_name = 'cam1_intra_0_0.2_0.4__ly4ftr16w2__cam1_0_0.2_0.4.csv'
     file_path = os.path.join(path, file_name)
 
     # load data from csv
@@ -887,7 +889,7 @@ if __name__ == '__main__':
              ['F+', 'Q0', epsi], ['F+', 'L', 0.33], ['F+', 'U', 0.33], ['F+', 'F+', 0.33 * stay]]
 
     bw_opt = dict(n_support=400, min_support=9, max_support=400, ici_span=0.2, rel_threshold=0.85, irls=False)
-    qse = GeneralQSE(kernel='tricube', order=3, delta=[0.16, 0.05, 1], transitions=trans, bw_estimation='ici-gcv', bw_options=bw_opt)
+    qse = GeneralQSE(kernel='tricube', order=3, delta=[0.16, 0.05, 1], transitions=trans, bw_estimation='ici', bw_options=bw_opt)
 
     # run algorithms
     t = time.process_time()
@@ -897,4 +899,4 @@ if __name__ == '__main__':
     print('finish')
 
     # display results
-    qse.plot(result)
+    qse.plot(result, plot_prim_prob=False, plot_bw=True)
